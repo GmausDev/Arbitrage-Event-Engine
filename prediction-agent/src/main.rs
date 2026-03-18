@@ -24,11 +24,9 @@ use risk_engine::{RiskConfig, RiskEngine};
 use simulation_engine::{SimulationConfig, SimulationEngine};
 
 // ── Agents ───────────────────────────────────────────────────────────────────
-use arb_agent::ArbAgent;
 use bayesian_edge_agent::{BayesianEdgeAgent, BayesianEdgeConfig};
 use graph_arb_agent::{GraphArbAgent, GraphArbConfig};
 use market_scanner::{KalshiClient, MarketScanner, PolymarketClient, ScannerConfig};
-use news_agent::NewsAgent;
 use signal_agent::{SignalAgent, SignalAgentConfig};
 use temporal_agent::{TemporalAgent, TemporalConfig};
 
@@ -151,14 +149,6 @@ async fn main() -> Result<()> {
             .expect("failed to build Kalshi HTTP client"),
         ));
 
-    // news_agent — polls news feeds, scores sentiment, publishes
-    // SentimentUpdate events consumed by bayesian_engine.
-    let news = NewsAgent::new(bus.clone());
-
-    // arb_agent — compares model vs. market probabilities, emits TradeSignal
-    // events when the gap exceeds the configured threshold.
-    let arb = ArbAgent::new(bus.clone());
-
     // signal_agent — converts Bayesian posteriors into sized TradeSignal events.
     let signal = SignalAgent::new(bus.clone(), SignalAgentConfig::default());
 
@@ -259,8 +249,6 @@ async fn main() -> Result<()> {
 
     // Agents
     let h_scanner  = tokio::spawn(scanner.run(cancel.child_token()));
-    let h_news     = tokio::spawn(async move { news.run().await });
-    let h_arb      = tokio::spawn(async move { arb.run().await });
     let h_signal      = tokio::spawn(signal.run(cancel.child_token()));
     let h_shock_det   = tokio::spawn(shock_det.run(cancel.child_token()));
     let h_graph_arb   = tokio::spawn(graph_arb.run(cancel.child_token()));
@@ -286,7 +274,7 @@ async fn main() -> Result<()> {
     // Drop remaining stub tasks (they will be cancelled on process exit).
     drop((
         h_graph, h_bayes, h_risk, h_sim, h_exec,
-        h_scanner, h_news, h_arb,
+        h_scanner,
         h_signal, h_shock_det, h_graph_arb, h_temporal, h_bayes_edge, h_meta_strat,
         h_rel_disc, h_strategy_res, h_data_ingestion,
         h_priority_eng, h_port_opt, h_port_eng, h_analytics,

@@ -24,8 +24,6 @@ members = [
 
     # Agent crates (library, spawned as async tasks from main)
     "agents/market_scanner",
-    "agents/news_agent",
-    "agents/arb_agent",
     "agents/signal_agent",
     "agents/graph_arb_agent",
     "agents/temporal_agent",

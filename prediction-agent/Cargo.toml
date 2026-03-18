@@ -21,8 +21,6 @@ execution_sim     = { path = "../crates/execution_sim" }
 # Agents
 market_scanner       = { path = "../agents/market_scanner" }
 signal_agent         = { path = "../agents/signal_agent" }
-news_agent           = { path = "../agents/news_agent" }
-arb_agent            = { path = "../agents/arb_agent" }
 graph_arb_agent      = { path = "../agents/graph_arb_agent" }
 temporal_agent       = { path = "../agents/temporal_agent" }
 bayesian_edge_agent  = { path = "../agents/bayesian_edge_agent" }
