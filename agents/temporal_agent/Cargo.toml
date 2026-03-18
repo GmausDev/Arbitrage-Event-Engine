@@ -1,0 +1,16 @@
+[package]
+name = "temporal_agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common     = { path = "../../crates/common" }
+chrono     = { workspace = true }
+serde      = { workspace = true }
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+tracing    = { workspace = true }
+metrics    = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

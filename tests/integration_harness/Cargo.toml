@@ -1,0 +1,29 @@
+[package]
+name    = "integration_harness"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "integration_harness"
+path = "src/main.rs"
+
+[dependencies]
+# Internal workspace crates
+common         = { workspace = true }
+market_graph   = { path = "../../crates/market_graph" }
+market_scanner = { path = "../../agents/market_scanner" }
+
+# Async runtime
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+
+# Async trait for MockSource
+async-trait = { workspace = true }
+
+# Logging
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+anyhow  = { workspace = true }
+chrono  = { workspace = true }

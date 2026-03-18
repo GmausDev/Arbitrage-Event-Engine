@@ -1,0 +1,44 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo lock for libraries (keep for binaries — workspace root keeps it)
+# Cargo.lock intentionally committed for reproducible binary builds
+
+# Environment / secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Config overrides (may contain secrets)
+config/local.toml
+config/secrets.toml
+
+# Node / Next.js
+control-panel-ui/node_modules/
+control-panel-ui/.next/
+control-panel-ui/out/
+control-panel-ui/.swc/
+control-panel-ui/npm-debug.log*
+control-panel-ui/yarn-debug.log*
+control-panel-ui/yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code internal files — not for public repo
+.claude/
+CLAUDE.md
+SystemPrompt.md
+Iterationprompt.md
+
+# Exclude all .md files except README.md at the root
+*.md
+!README.md

@@ -1,0 +1,94 @@
+[workspace]
+resolver = "2"
+members = [
+    # Shared types and event bus
+    "crates/common",
+
+    # Engine crates (library)
+    "crates/market_graph",
+    "crates/bayesian_engine",
+    "crates/risk_engine",
+    "crates/portfolio_optimizer",
+    "crates/simulation_engine",
+    "crates/execution_sim",
+    "crates/portfolio_engine",
+    "crates/performance_analytics",
+    "crates/world_model",
+    "crates/scenario_engine",
+    "crates/shock_detector",
+    "crates/meta_strategy",
+    "crates/relationship_discovery",
+    "crates/strategy_research",
+    "crates/data_ingestion",
+    "crates/signal_priority_engine",
+
+    # Agent crates (library, spawned as async tasks from main)
+    "agents/market_scanner",
+    "agents/news_agent",
+    "agents/arb_agent",
+    "agents/signal_agent",
+    "agents/graph_arb_agent",
+    "agents/temporal_agent",
+    "agents/bayesian_edge_agent",
+
+    # Mission Control web dashboard
+    "control-panel",
+
+    # Main binary
+    "prediction-agent",
+
+    # Integration test harness (run: cargo run --bin integration_harness)
+    "tests/integration_harness",
+]
+
+[workspace.dependencies]
+# Web framework (control-panel)
+axum       = { version = "0.7", features = ["ws", "macros"] }
+tower      = { version = "0.4" }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+
+# Async runtime
+tokio        = { version = "1", features = ["full"] }
+
+# Serialization
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+
+# Logging / tracing
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Config
+toml         = "0.8"
+config       = "0.14"
+
+# HTTP client
+reqwest      = { version = "0.12", features = ["json", "stream"] }
+
+# Graph
+petgraph     = "0.6"
+
+# Numerics
+ndarray      = "0.15"
+
+# Time
+chrono       = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow       = "1"
+thiserror    = "1"
+
+# Metrics (Prometheus-compatible)
+metrics      = "0.23"
+metrics-exporter-prometheus = "0.15"
+
+# Async utilities
+futures      = "0.3"
+async-trait  = "0.1"
+tokio-util   = { version = "0.7", features = ["rt"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+
+# Internal crates
+common                 = { path = "crates/common" }
+signal_priority_engine = { path = "crates/signal_priority_engine" }

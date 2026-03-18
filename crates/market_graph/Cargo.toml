@@ -1,0 +1,35 @@
+[package]
+name    = "market_graph"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Internal shared types + event bus
+common = { workspace = true }
+
+# Graph structure — serde-1 enables Serialize/Deserialize on graph internals
+petgraph = { version = "0.6", features = ["serde-1"] }
+
+# Serialization
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Async runtime & synchronisation
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Metrics (Prometheus)
+metrics = { workspace = true }
+
+# Timestamps
+chrono = { workspace = true }
+
+[dev-dependencies]
+# For floating-point comparisons in tests (assert_abs_diff_eq! etc.)
+approx = "0.5"

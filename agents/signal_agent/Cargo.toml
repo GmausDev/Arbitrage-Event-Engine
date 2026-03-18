@@ -1,0 +1,17 @@
+[package]
+name = "signal_agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common     = { workspace = true }
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+thiserror  = { workspace = true }
+serde      = { workspace = true }
+tracing    = { workspace = true }
+chrono     = { workspace = true }
+metrics    = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"

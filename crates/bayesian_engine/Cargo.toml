@@ -1,0 +1,35 @@
+[package]
+name    = "bayesian_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Internal shared types + event bus
+common = { workspace = true }
+
+# Market graph engine (SharedEngine handle + pre-seeding beliefs from graph)
+market_graph = { path = "../market_graph" }
+
+# Async runtime & synchronisation
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Metrics (Prometheus)
+metrics = { workspace = true }
+
+# Timestamps
+chrono = { workspace = true }
+
+[dev-dependencies]
+# Floating-point comparisons in tests
+approx = "0.5"
+tokio  = { workspace = true }

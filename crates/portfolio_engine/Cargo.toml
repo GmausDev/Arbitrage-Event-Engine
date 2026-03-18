@@ -1,0 +1,14 @@
+[package]
+name    = "portfolio_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common     = { workspace = true }
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+serde      = { workspace = true }
+tracing    = { workspace = true }
+chrono     = { workspace = true }
+thiserror  = { workspace = true }
+metrics    = { workspace = true }

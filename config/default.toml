@@ -1,0 +1,53 @@
+# config/default.toml
+# Default configuration for the Prediction Market Agent.
+# Override locally with config/local.toml (gitignored) or PRED_AGENT_* env vars.
+
+# Target market niches to scan and trade
+target_niches = ["crypto", "politics", "geopolitics", "macro", "sports"]
+
+# Minimum |model_probability - market_probability| to emit an arb signal
+arb_threshold = 0.05
+
+# Event Bus channel capacity (number of buffered events before consumers lag)
+bus_capacity = 1024
+
+# Market scanner poll interval in milliseconds (default: 1 second)
+tick_interval_ms = 1000
+
+# Paper-trading starting capital in USD. All "trades" are simulated; no real orders.
+# Used by portfolio, execution_sim, risk, optimizer, and performance_analytics.
+paper_bankroll = 10000
+
+# ── Market Scanner ────────────────────────────────────────────────────────────
+[scanner]
+# Milliseconds between each full poll cycle (overrides tick_interval_ms above
+# when constructing ScannerConfig directly).
+poll_interval_ms    = 1000
+
+# Maximum markets to publish per tick before truncating.
+batch_size          = 500
+
+# Data sources to enable.  Remove an entry to disable that exchange.
+enabled_sources     = ["polymarket", "kalshi"]
+
+# Polymarket CLOB REST API base URL (no trailing slash).
+polymarket_base_url = "https://clob.polymarket.com"
+
+# Kalshi v2 REST API base URL (no trailing slash).
+kalshi_base_url     = "https://trading-api.kalshi.com/trade-api/v2"
+
+# Per-request HTTP timeout in milliseconds.
+request_timeout_ms  = 5000
+
+# Maximum fetch retries per source before skipping for this tick.
+max_retries         = 3
+
+# ── Market Graph ──────────────────────────────────────────────────────────────
+[graph]
+# Minimum |current_prob - implied_prob| required to trigger a propagation pass.
+# Increases suppress noisy micro-updates; decreases make the graph more reactive.
+change_threshold = 0.01
+
+# Maximum BFS depth per propagation pass.
+# A value of 3 means updates travel at most 3 hops from the changed market.
+max_depth = 3

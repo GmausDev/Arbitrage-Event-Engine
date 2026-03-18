@@ -1,0 +1,21 @@
+[package]
+name    = "strategy_research"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common     = { workspace = true }
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+tracing    = { workspace = true }
+anyhow     = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+chrono     = { workspace = true }
+metrics    = { workspace = true }
+rand       = { version = "0.8", features = ["small_rng"] }
+uuid       = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio  = { workspace = true }
+common = { workspace = true }

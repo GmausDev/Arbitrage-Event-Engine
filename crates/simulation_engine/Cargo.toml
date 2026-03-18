@@ -1,0 +1,22 @@
+[package]
+name    = "simulation_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common      = { workspace = true }
+tokio       = { workspace = true }
+tokio-util  = { workspace = true }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }
+metrics     = { workspace = true }
+rand        = "0.8"
+
+[dev-dependencies]
+tokio    = { workspace = true }
+common   = { workspace = true }
+tempfile = "3"

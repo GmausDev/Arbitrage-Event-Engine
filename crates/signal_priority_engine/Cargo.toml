@@ -1,0 +1,13 @@
+[package]
+name    = "signal_priority_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common       = { path = "../common" }
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+tracing      = { workspace = true }
+metrics      = { workspace = true }
+serde        = { workspace = true }
+chrono       = { workspace = true }

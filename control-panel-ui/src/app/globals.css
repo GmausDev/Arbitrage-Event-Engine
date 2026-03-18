@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-base:      #0a0b0d;
+  --bg-surface:   #111318;
+  --bg-raised:    #181c23;
+  --border:       #1e2330;
+  --text-primary: #e2e8f0;
+  --text-muted:   #8892a4;
+  --green:        #10b981;
+  --red:          #ef4444;
+  --blue:         #3b82f6;
+  --yellow:       #f59e0b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: var(--bg-base);
+  color:            var(--text-primary);
+  font-family:      'JetBrains Mono', 'Fira Code', monospace;
+  font-size:        13px;
+  line-height:      1.5;
+  margin:           0;
+  padding:          0;
+  height:           100%;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar              { width: 6px; height: 6px; }
+::-webkit-scrollbar-track        { background: var(--bg-surface); }
+::-webkit-scrollbar-thumb        { background: #2a3040; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover  { background: #3a4050; }
+
+/* Selection */
+::selection { background-color: rgba(59,130,246,0.3); }
+
+/* Recharts tooltip overrides */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: #181c23 !important;
+  border:     1px solid #1e2330 !important;
+  border-radius: 6px !important;
+}
+.recharts-tooltip-label { color: #e2e8f0 !important; }
