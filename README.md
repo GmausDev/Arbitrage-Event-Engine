@@ -4,7 +4,7 @@ A modular, event-driven prediction market trading system written in Rust. The bo
 
 ## Overview
 
-The system is built as a Rust workspace of 25+ specialized crates, each responsible for a single concern, communicating exclusively through a shared `EventBus` (tokio broadcast channel). A real-time web dashboard provides live visibility into signals, portfolio state, market data, and strategy research.
+The system is built as a Rust workspace of 23+ specialized crates, each responsible for a single concern, communicating exclusively through a shared `EventBus` (tokio broadcast channel). A real-time web dashboard provides live visibility into signals, portfolio state, market data, and strategy research.
 
 ### Strategy Approach
 
@@ -36,7 +36,6 @@ market_scanner ──→ Event::Market
                         └─→ world_model      ──→ Event::WorldProbability
                                 └─→ scenario_engine ──→ Event::ScenarioSignal
 
-news_agent       ──→ Event::Sentiment ──→ bayesian_engine
 data_ingestion   ──→ Event::Market / MarketSnapshot / NewsEvent / SocialTrend
 
 bayesian_engine  ──→ Event::Posterior
@@ -85,8 +84,6 @@ agents/
   graph_arb_agent/       # Graph-implied vs. market-price arbitrage
   temporal_agent/        # Rolling momentum z-score signals
   bayesian_edge_agent/   # Posterior deviation + shock boost + graph damping
-  news_agent/            # News sentiment stub
-  arb_agent/             # Legacy arbitrage stub (superseded by strategy agents)
 
 control-panel/           # Axum REST + WebSocket backend (port 3001)
 control-panel-ui/        # Next.js/React dashboard frontend (port 3000)
@@ -288,8 +285,6 @@ Every engine/agent follows the same structure:
 | `signal_priority_engine` | Complete |
 | `control-panel` + `control-panel-ui` | Complete (7 dashboard pages) |
 | `simulation_engine` | Placeholder — `run_monte_carlo()` returns zeroed results |
-| `news_agent` | Stub — `fetch_news()` returns empty, no sentiment events emitted |
-| `arb_agent` | Legacy stub — superseded by `signal_agent` + strategy agents |
 
 ---
 
