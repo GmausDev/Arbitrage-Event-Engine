@@ -6,6 +6,7 @@ pub mod cache;
 pub mod config;
 pub mod connectors;
 pub mod ingestion_engine;
+pub mod matcher;
 pub mod normalization;
 pub mod scheduler;
 pub mod streaming;

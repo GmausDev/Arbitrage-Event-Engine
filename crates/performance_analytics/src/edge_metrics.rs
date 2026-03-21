@@ -686,6 +686,7 @@ mod tests {
                 expected_value: (posterior - avg_price).abs(),
                 posterior_prob: posterior,
                 market_prob: avg_price,
+                signal_source: "test".to_string(),
                 signal_timestamp: Utc::now(),
                 timestamp: Utc::now(),
             },

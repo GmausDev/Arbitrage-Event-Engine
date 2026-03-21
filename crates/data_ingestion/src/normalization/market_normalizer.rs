@@ -35,6 +35,8 @@ impl MarketNormalizer {
                     ask,
                     volume: r.volume.max(0.0),
                     liquidity: r.liquidity.max(0.0),
+                    resolution_date: None,
+                    source_platform: String::new(), // tagged by MarketPollerRunner
                     timestamp: Utc::now(),
                 })
             })

@@ -28,6 +28,7 @@ use common::{Event, EventBus};
 use crate::{
     cache::snapshot_cache::SnapshotCache,
     config::IngestionConfig,
+    matcher::match_news_to_markets,
     connectors::{
         calendar_connectors::{CalendarConnector, PredictItCalendarConnector},
         economic_connectors::{EconomicConnector, FREDConnector, TradingEconomicsConnector},
@@ -74,12 +75,21 @@ impl ConnectorRunner for MarketPollerRunner {
         let market_results = join_all(market_futs).await;
         let book_results = join_all(book_futs).await;
 
-        let mut all_raw = vec![];
         let mut all_books = vec![];
 
+        // Normalise per-connector so each snapshot can be tagged with its
+        // source platform name before all batches are merged.
+        let mut snapshots: Vec<common::events::MarketSnapshot> = Vec::new();
         for (conn, result) in self.connectors.iter().zip(market_results) {
             match result {
-                Ok(markets) => all_raw.extend(markets),
+                Ok(markets) => {
+                    let platform = conn.name().to_string();
+                    let mut batch = MarketNormalizer::normalize_markets(markets);
+                    for s in &mut batch {
+                        s.source_platform = platform.clone();
+                    }
+                    snapshots.extend(batch);
+                }
                 Err(e) => tracing::warn!(connector = conn.name(), err = %e, "market fetch failed"),
             }
         }
@@ -90,7 +100,6 @@ impl ConnectorRunner for MarketPollerRunner {
             }
         }
 
-        let mut snapshots = MarketNormalizer::normalize_markets(all_raw);
         snapshots = MarketNormalizer::apply_orderbooks(snapshots, all_books);
         let updates = MarketNormalizer::to_market_updates(&snapshots);
         let count = snapshots.len();
@@ -155,7 +164,21 @@ impl ConnectorRunner for NewsPollerRunner {
                 .collect()
         }; // write lock dropped here
 
+        // Snapshot current market titles outside the lock for entity matching.
+        let market_snapshots: Vec<_> = {
+            let guard = cache.read().await;
+            guard.all_markets().cloned().collect()
+        };
+
         for event in to_publish {
+            // Entity → market matching: if any entity/topic matches a market
+            // title, emit Event::Sentiment so bayesian_engine can update
+            // posteriors for the relevant markets.
+            if let Some(sentiment) = match_news_to_markets(&event, &market_snapshots) {
+                let matched = sentiment.related_market_ids.len();
+                let _ = bus.publish(Event::Sentiment(sentiment));
+                counter!("data_ingestion_sentiment_matches_total").increment(matched as u64);
+            }
             let _ = bus.publish(Event::NewsEvent(event));
             counter!("data_ingestion_news_events_total").increment(1);
             new_count += 1;

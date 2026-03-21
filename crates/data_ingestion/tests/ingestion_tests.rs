@@ -96,6 +96,8 @@ fn cache_market_ids_snapshot() {
         ask: 0.51,
         volume: 1000.0,
         liquidity: 500.0,
+        resolution_date: None,
+        source_platform: String::new(),
         timestamp: Utc::now(),
     });
     cache.update_market(common::events::MarketSnapshot {
@@ -107,6 +109,8 @@ fn cache_market_ids_snapshot() {
         ask: 0.61,
         volume: 2000.0,
         liquidity: 800.0,
+        resolution_date: None,
+        source_platform: String::new(),
         timestamp: Utc::now(),
     });
     let ids = cache.market_ids();
@@ -316,6 +320,8 @@ impl ConnectorRunner for MarketEventRunner {
                 ask: 0.51,
                 volume: 1000.0,
                 liquidity: 500.0,
+                resolution_date: None,
+                source_platform: String::new(),
                 timestamp: Utc::now(),
             })
             .collect();

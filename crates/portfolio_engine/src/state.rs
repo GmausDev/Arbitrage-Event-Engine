@@ -1,6 +1,6 @@
 // crates/portfolio_engine/src/state.rs
 
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -37,6 +37,12 @@ pub struct PortfolioState {
 
     /// Wall-clock timestamp of the last state mutation.
     pub last_update: DateTime<Utc>,
+
+    /// Realised PnL bucketed by originating strategy agent name.
+    ///
+    /// Updated whenever a position is closed (by a new fill, risk trim, or TTL
+    /// expiry).  Use this to evaluate whether a strategy is generating alpha.
+    pub pnl_by_source: BTreeMap<String, f64>,
 }
 
 impl PortfolioState {
@@ -49,6 +55,7 @@ impl PortfolioState {
             total_unrealized_pnl: 0.0,
             initial_bankroll,
             last_update:          Utc::now(),
+            pnl_by_source:        BTreeMap::new(),
         }
     }
 

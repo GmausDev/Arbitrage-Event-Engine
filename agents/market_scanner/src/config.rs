@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 /// [scanner]
 /// poll_interval_ms      = 1000
 /// batch_size            = 500
-/// polymarket_base_url   = "https://clob.polymarket.com"
-/// kalshi_base_url       = "https://trading-api.kalshi.com/trade-api/v2"
+/// polymarket_base_url   = "https://gamma-api.polymarket.com"
+/// kalshi_base_url       = "https://api.elections.kalshi.com/trade-api/v2"
 /// enabled_sources       = ["polymarket", "kalshi"]
 /// request_timeout_ms    = 5000
 /// max_retries           = 3
@@ -63,10 +63,10 @@ impl ScannerConfig {
     fn default_poll_interval_ms() -> u64 { 1_000 }
     fn default_batch_size() -> usize { 500 }
     fn default_polymarket_base_url() -> String {
-        "https://clob.polymarket.com".into()
+        "https://gamma-api.polymarket.com".into()
     }
     fn default_kalshi_base_url() -> String {
-        "https://trading-api.kalshi.com/trade-api/v2".into()
+        "https://api.elections.kalshi.com/trade-api/v2".into()
     }
     fn default_enabled_sources() -> Vec<String> {
         vec!["polymarket".into(), "kalshi".into()]

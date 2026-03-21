@@ -27,6 +27,7 @@ pub mod config;
 pub mod engine;
 pub mod generators;
 pub mod metrics;
+pub mod monte_carlo;
 pub mod replay;
 pub mod types;
 
@@ -34,5 +35,10 @@ pub use config::{MarketSpec, MonteCarloConfig, ParameterSweepPoint, SimulationCo
 pub use engine::SimulationEngine;
 pub use generators::MarketGenerator;
 pub use metrics::SimMetricsCollector;
+pub use monte_carlo::{
+    compute_max_drawdown, compute_sharpe_ratio, compute_var_cvar, MarketStateSnapshot,
+    MonteCarloResult, MonteCarloSimConfig, MonteCarloSimulator, SimulationPathResult,
+    SimulationState,
+};
 pub use replay::HistoricalReplayer;
 pub use types::{SimulationMode, SimulationResult, SimulationTick, SweepResult};

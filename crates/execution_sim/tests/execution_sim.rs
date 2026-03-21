@@ -28,6 +28,7 @@ fn make_trade(market_id: &str, fraction: f64, market_prob: f64) -> ApprovedTrade
         expected_value:    0.05,
         posterior_prob:    market_prob + 0.10,
         market_prob,
+        signal_source:     "test".to_string(),
         signal_timestamp:  now,
         timestamp:         now,
     }
@@ -59,31 +60,6 @@ async fn collect_executions(
     results
 }
 
-/// Count PortfolioUpdate events received within `timeout_ms`.
-async fn count_portfolio_updates(
-    mut rx:     tokio::sync::broadcast::Receiver<Arc<Event>>,
-    max_count:  usize,
-    timeout_ms: u64,
-) -> usize {
-    let mut count = 0;
-    let _ = timeout(Duration::from_millis(timeout_ms), async {
-        loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    if let Event::Portfolio(_) = ev.as_ref() {
-                        count += 1;
-                        if count >= max_count {
-                            return;
-                        }
-                    }
-                }
-                _ => return,
-            }
-        }
-    })
-    .await;
-    count
-}
 
 fn spawn_sim(bus: &EventBus, config: ExecutionConfig) -> CancellationToken {
     let sim    = ExecutionSimulator::new(config, bus.clone());
@@ -219,7 +195,10 @@ async fn always_partial_reduces_quantity() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn portfolio_update_published_after_fill() {
+async fn execution_results_published_after_fill() {
+    // execution_sim no longer publishes Event::Portfolio — portfolio_engine is
+    // the authoritative source. Verify that two filled trades produce two
+    // Event::Execution events instead.
     let config = ExecutionConfig {
         simulate_slippage:        false,
         partial_fill_probability: 0.0,
@@ -233,10 +212,10 @@ async fn portfolio_update_published_after_fill() {
     bus.publish(Event::ApprovedTrade(make_trade("MKTA", 0.05, 0.50))).unwrap();
     bus.publish(Event::ApprovedTrade(make_trade("MKTB", 0.05, 0.45))).unwrap();
 
-    let count = count_portfolio_updates(rx, 2, 400).await;
+    let results = collect_executions(rx, 2, 400).await;
     cancel.cancel();
 
-    assert_eq!(count, 2, "one PortfolioUpdate per trade, got {count}");
+    assert_eq!(results.len(), 2, "one ExecutionResult per trade, got {}", results.len());
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +223,10 @@ async fn portfolio_update_published_after_fill() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn portfolio_exposure_increases() {
+async fn two_trades_produce_two_execution_events() {
+    // execution_sim no longer publishes Event::Portfolio (that is portfolio_engine's
+    // responsibility). Verify instead that two ApprovedTrade inputs produce two
+    // Event::Execution outputs with positive executed quantities.
     let config = ExecutionConfig {
         simulate_slippage:        false,
         partial_fill_probability: 0.0,
@@ -258,34 +240,15 @@ async fn portfolio_exposure_increases() {
     bus.publish(Event::ApprovedTrade(make_trade("MKT1", 0.05, 0.50))).unwrap();
     bus.publish(Event::ApprovedTrade(make_trade("MKT2", 0.07, 0.55))).unwrap();
 
-    // Collect two PortfolioUpdate events and check the final exposure.
-    let mut last_exposure = 0.0_f64;
-    let mut rx2 = bus.subscribe();
-    let _ = timeout(Duration::from_millis(400), async {
-        let mut count = 0;
-        loop {
-            match rx2.recv().await {
-                Ok(ev) => {
-                    if let Event::Portfolio(pu) = ev.as_ref() {
-                        last_exposure = pu.portfolio.exposure;
-                        count += 1;
-                        if count >= 2 {
-                            return;
-                        }
-                    }
-                }
-                _ => return,
-            }
-        }
-    })
-    .await;
+    let results = collect_executions(rx, 2, 400).await;
     cancel.cancel();
 
-    // Both positions filled → exposure ≈ 0.05 + 0.07 = 0.12 (in bankroll fractions)
+    assert_eq!(results.len(), 2, "expected 2 ExecutionResult events");
     assert!(
-        last_exposure > 0.0,
-        "exposure must be positive after fills, got {last_exposure}"
+        results.iter().all(|r| r.executed_quantity > 0.0),
+        "both fills must have positive executed_quantity"
     );
+    drop(bus);
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +282,8 @@ fn unit_simulate_execution_no_slippage() {
         expected_value:    0.05,
         posterior_prob:    0.60,
         market_prob:       0.50,
+        signal_source:     "test".to_string(),
+        signal_timestamp:  Utc::now(),
         timestamp:         Utc::now(),
     };
     let mut rng = StdRng::seed_from_u64(0);
@@ -363,6 +328,8 @@ fn unit_simulate_execution_slippage_perturbs_price() {
         expected_value:    0.05,
         posterior_prob:    0.60,
         market_prob:       0.50,
+        signal_source:     "test".to_string(),
+        signal_timestamp:  Utc::now(),
         timestamp:         Utc::now(),
     };
     let mut rng = StdRng::seed_from_u64(42);

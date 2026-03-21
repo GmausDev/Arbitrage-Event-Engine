@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use common::{
@@ -9,6 +10,7 @@ use common::{
 };
 use metrics::counter;
 use tokio::sync::broadcast;
+use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -92,9 +94,14 @@ impl PortfolioEngine {
                 }
                 TradeDirection::Sell => (old.avg_price - trade.market_prob) * old.size,
             };
-            state.total_realized_pnl   += old.realized_pnl + realised;
+            let closed_pnl = old.realized_pnl + realised;
+            state.total_realized_pnl   += closed_pnl;
             state.total_unrealized_pnl -= old.unrealized_pnl;
             state.cash                 += old.size; // return deployed capital
+            // Attribution: bucket the closed PnL by originating strategy.
+            if !old.source.is_empty() {
+                *state.pnl_by_source.entry(old.source.clone()).or_insert(0.0) += closed_pnl;
+            }
         }
 
         // ── Open the new position ─────────────────────────────────────────────
@@ -121,6 +128,7 @@ impl PortfolioEngine {
                 unrealized_pnl:    0.0,
                 last_market_price: Some(trade.market_prob),
                 opened_at:         result.timestamp,
+                source:            trade.signal_source.clone(),
                 tags:              Vec::new(),
             },
         );
@@ -261,63 +269,138 @@ impl PortfolioEngine {
     /// Subscribe to `Event::Execution` and apply each fill to the portfolio,
     /// publishing `Event::Portfolio` after every update.
     ///
+    /// Also:
+    /// - Re-publishes `Event::Portfolio` at most every 5 s when market prices
+    ///   arrive, so unrealised PnL is visible in the dashboard without waiting
+    ///   for a new execution.
+    /// - Closes positions that have been open longer than `position_ttl_secs`
+    ///   (checked every 60 s), freeing exposure for new trades.
+    ///
     /// Runs until `cancel` fires or the bus closes.
     pub async fn run(self, cancel: CancellationToken) {
         let Self { config, state, bus, mut rx } = self;
         info!(
             initial_bankroll      = config.initial_bankroll,
             max_position_fraction = config.max_position_fraction,
+            position_ttl_secs     = config.position_ttl_secs,
             "portfolio_engine: started"
         );
 
+        // Throttle MTM portfolio publishes — at most once every 5 seconds.
+        const MTM_INTERVAL: Duration = Duration::from_secs(5);
+        let mut last_mtm_publish = Instant::now().checked_sub(MTM_INTERVAL).unwrap_or_else(Instant::now);
+
+        // TTL expiry ticker — check every 60 s.
+        let mut ttl_tick = interval(Duration::from_secs(60));
+        ttl_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
-            let event = tokio::select! {
+            tokio::select! {
                 biased;
+
                 _ = cancel.cancelled() => {
                     info!("portfolio_engine: shutdown requested, exiting");
                     break;
                 }
-                result = rx.recv() => result,
-            };
 
-            match event {
-                Ok(ev) => match ev.as_ref() {
-                    Event::Execution(result) => {
-                        counter!("portfolio_engine_executions_seen_total").increment(1);
-                        // Apply fill and risk adjustments under one write-lock.
-                        let update = {
-                            let mut st = state.write().await;
-                            Self::apply_execution(&mut st, result);
-                            Self::apply_risk_adjustments(&mut st, config.max_position_fraction);
-                            Self::to_portfolio_update(&st)
-                        };
-                        if result.filled {
-                            counter!("portfolio_engine_executions_applied_total").increment(1);
-                            counter!("portfolio_engine_positions_filled_total").increment(1);
-                            if let Err(e) = bus.publish(Event::Portfolio(update)) {
-                                warn!("portfolio_engine: failed to publish PortfolioUpdate: {e}");
+                _ = ttl_tick.tick(), if config.ttl_enabled() => {
+                    let now = Utc::now();
+                    let ttl = chrono::Duration::seconds(config.position_ttl_secs as i64);
+                    let update = {
+                        let mut st = state.write().await;
+                        let expired: Vec<String> = st.positions.iter()
+                            .filter(|(_, p)| now.signed_duration_since(p.opened_at) >= ttl)
+                            .map(|(id, _)| id.clone())
+                            .collect();
+                        if expired.is_empty() {
+                            None
+                        } else {
+                            let count = expired.len() as u64;
+                            for id in &expired {
+                                if let Some(pos) = st.positions.remove(id) {
+                                    let final_pnl = pos.realized_pnl + pos.unrealized_pnl;
+                                    st.total_realized_pnl   += final_pnl;
+                                    st.total_unrealized_pnl -= pos.unrealized_pnl;
+                                    st.cash                 += pos.size;
+                                    // Attribution: bucket expired-position PnL by source.
+                                    if !pos.source.is_empty() {
+                                        *st.pnl_by_source.entry(pos.source.clone()).or_insert(0.0) += final_pnl;
+                                    }
+                                    info!(
+                                        market_id = %id,
+                                        source    = %pos.source,
+                                        held_secs = now.signed_duration_since(pos.opened_at).num_seconds(),
+                                        pnl       = final_pnl,
+                                        "portfolio_engine: position expired (TTL)"
+                                    );
+                                }
                             }
+                            st.last_update = Utc::now();
+                            counter!("portfolio_engine_positions_expired_total").increment(count);
+                            Some(Self::to_portfolio_update(&st))
+                        }
+                    };
+                    if let Some(pu) = update {
+                        if let Err(e) = bus.publish(Event::Portfolio(pu)) {
+                            warn!("portfolio_engine: failed to publish TTL-expired PortfolioUpdate: {e}");
                         }
                     }
-                    Event::Market(update) => {
-                        // Keep unrealised PnL current as market prices arrive.
-                        let prices = HashMap::from([(
-                            update.market.id.clone(),
-                            update.market.probability,
-                        )]);
-                        let mut st = state.write().await;
-                        Self::recalculate_unrealized(&mut st, &prices);
-                    }
-                    _ => {}
-                },
-
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("portfolio_engine: lagged by {n} events");
                 }
 
-                Err(broadcast::error::RecvError::Closed) => {
-                    info!("portfolio_engine: event bus closed, shutting down");
-                    break;
+                result = rx.recv() => {
+                    match result {
+                        Ok(ev) => match ev.as_ref() {
+                            Event::Execution(result) => {
+                                counter!("portfolio_engine_executions_seen_total").increment(1);
+                                let update = {
+                                    let mut st = state.write().await;
+                                    Self::apply_execution(&mut st, result);
+                                    Self::apply_risk_adjustments(&mut st, config.max_position_fraction);
+                                    Self::to_portfolio_update(&st)
+                                };
+                                if result.filled {
+                                    counter!("portfolio_engine_executions_applied_total").increment(1);
+                                    counter!("portfolio_engine_positions_filled_total").increment(1);
+                                    if let Err(e) = bus.publish(Event::Portfolio(update)) {
+                                        warn!("portfolio_engine: failed to publish PortfolioUpdate: {e}");
+                                    }
+                                }
+                            }
+                            Event::Market(update) => {
+                                // Keep unrealised PnL current as market prices arrive.
+                                let prices = HashMap::from([(
+                                    update.market.id.clone(),
+                                    update.market.probability,
+                                )]);
+                                let pu = {
+                                    let mut st = state.write().await;
+                                    Self::recalculate_unrealized(&mut st, &prices);
+                                    // Throttle: only publish if 5 s have elapsed.
+                                    if last_mtm_publish.elapsed() >= MTM_INTERVAL {
+                                        Some(Self::to_portfolio_update(&st))
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(pu) = pu {
+                                    last_mtm_publish = Instant::now();
+                                    if let Err(e) = bus.publish(Event::Portfolio(pu)) {
+                                        warn!("portfolio_engine: failed to publish MTM PortfolioUpdate: {e}");
+                                    }
+                                }
+                            }
+                            _ => {}
+                        },
+
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("portfolio_engine: lagged by {n} events");
+                        }
+
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!("portfolio_engine: event bus closed, shutting down");
+                            break;
+                        }
+                    }
                 }
             }
         }

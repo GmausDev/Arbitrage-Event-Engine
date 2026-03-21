@@ -3,10 +3,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use common::{
-    ApprovedTrade, EdgeDecayReport, Event, EventBus, ExecutionResult, Portfolio, PortfolioUpdate,
-    Position,
-};
+use common::{ApprovedTrade, EdgeDecayReport, Event, EventBus, ExecutionResult};
 use metrics::{counter, histogram};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -65,7 +62,6 @@ impl ExecutionSimulator {
     pub fn new(config: ExecutionConfig, bus: EventBus) -> Self {
         let mut state = crate::state::ExecutionState::default();
         state.bankroll = config.bankroll;
-        state.peak_equity = config.bankroll;
         let rx = bus.subscribe();
         Self {
             config,
@@ -138,45 +134,6 @@ impl ExecutionSimulator {
         }
     }
 
-    // ── Portfolio bookkeeping ─────────────────────────────────────────────────
-
-    /// Apply a filled execution to the portfolio: upsert position and update exposure.
-    ///
-    /// When the same market is re-executed, the old position is replaced and any
-    /// unrealised gain/loss from the prior position is accumulated into `pnl` as a
-    /// *realised* component (using `trade.market_prob` as the exit price proxy).
-    ///
-    /// Full mark-to-market PnL across all open positions requires a current market
-    /// price feed and is handled by a dedicated analytics module, not here.
-    fn apply_fill(portfolio: &mut Portfolio, result: &ExecutionResult, bankroll: f64) {
-        let trade = &result.trade;
-
-        // If an existing position for this market is being replaced, realise its PnL.
-        // We use market_prob (the current mid-price) as the exit price proxy.
-        use common::TradeDirection;
-        if let Some(old) = portfolio.positions.iter().find(|p| p.market_id == trade.market_id) {
-            let realised = match old.direction {
-                TradeDirection::Buy | TradeDirection::Arbitrage => {
-                    (trade.market_prob - old.entry_probability) * old.size
-                }
-                TradeDirection::Sell => (old.entry_probability - trade.market_prob) * old.size,
-            };
-            portfolio.pnl += realised;
-        }
-        portfolio.positions.retain(|p| p.market_id != trade.market_id);
-
-        portfolio.positions.push(Position {
-            market_id:         trade.market_id.clone(),
-            direction:         trade.direction,
-            size:              result.executed_quantity * bankroll, // absolute USD
-            entry_probability: result.avg_price,
-            opened_at:         result.timestamp,
-        });
-
-        // Exposure = sum of all position sizes as fractions of bankroll.
-        portfolio.exposure = portfolio.positions.iter().map(|p| p.size / bankroll).sum();
-    }
-
     // ── Trade processing ──────────────────────────────────────────────────────
 
     async fn process_trade_parts(
@@ -230,14 +187,6 @@ impl ExecutionSimulator {
                     st.orders_partial += 1;
                 }
                 st.total_slippage += result.slippage.abs();
-                let bankroll = st.bankroll;
-                Self::apply_fill(&mut st.portfolio, &result, bankroll);
-
-                // Update peak equity (bankroll + realised PnL).
-                let equity = st.bankroll + st.portfolio.pnl;
-                if equity > st.peak_equity {
-                    st.peak_equity = equity;
-                }
             }
         }
 
@@ -265,25 +214,13 @@ impl ExecutionSimulator {
         if let Err(e) = bus.publish(Event::Execution(result)) {
             warn!("execution_sim: failed to publish ExecutionResult: {e}");
         }
-
-        // ── Publish PortfolioUpdate ───────────────────────────────────────────
-        let portfolio_snapshot = {
-            let st = state.read().await;
-            st.portfolio.clone()
-        };
-        let update = PortfolioUpdate {
-            portfolio: portfolio_snapshot,
-            timestamp: Utc::now(),
-        };
-        if let Err(e) = bus.publish(Event::Portfolio(update)) {
-            warn!("execution_sim: failed to publish PortfolioUpdate: {e}");
-        }
     }
 
     // ── Main event loop ───────────────────────────────────────────────────────
 
     /// Subscribe to `Event::ApprovedTrade` and simulate execution for each one,
-    /// publishing `Event::Execution` and `Event::Portfolio` on the bus.
+    /// publishing `Event::Execution` on the bus.
+    /// `Event::Portfolio` is published exclusively by `portfolio_engine`.
     ///
     /// Runs until `cancel` fires or the bus closes.
     pub async fn run(self, cancel: CancellationToken) {

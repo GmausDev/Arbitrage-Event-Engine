@@ -41,11 +41,13 @@
 //      `min_strategies` must all be satisfied before a `MetaSignal` is emitted.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use common::{Event, EventBus, InformationShock, MetaSignal, TradeDirection, TradeSignal};
 use metrics::counter;
 use tokio::sync::broadcast;
+use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -93,12 +95,33 @@ impl MetaStrategyEngine {
         let mut rx = self.rx.take().expect("rx already consumed");
         info!("meta_strategy: started");
 
+        // Evict stale MarketMeta entries every 60 s.  An entry is evictable when
+        // every signal it holds is older than 2 × signal_ttl_secs, meaning it
+        // cannot contribute to any future MetaSignal until fresh data arrives.
+        let mut eviction_tick = interval(Duration::from_secs(60));
+        eviction_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
                     info!("meta_strategy: cancelled, shutting down");
                     break;
+                }
+                _ = eviction_tick.tick() => {
+                    let cutoff = Utc::now()
+                        - chrono::Duration::seconds((self.config.signal_ttl_secs * 2) as i64);
+                    let mut state = self.state.write().await;
+                    let before = state.markets.len();
+                    state.markets.retain(|_, meta| {
+                        // Keep the entry if any signal is still within the extended TTL.
+                        meta.entries.values().any(|e| e.received_at >= cutoff)
+                    });
+                    let evicted = before - state.markets.len();
+                    if evicted > 0 {
+                        info!(evicted, remaining = state.markets.len(),
+                            "meta_strategy: evicted stale market entries");
+                    }
                 }
                 result = rx.recv() => {
                     match result {

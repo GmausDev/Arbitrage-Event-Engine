@@ -18,7 +18,7 @@ pub struct SignalAgentConfig {
     pub max_position_fraction: f64,
 
     /// Fractional Kelly multiplier applied before the hard cap.
-    /// Default: 0.25 (quarter-Kelly).
+    /// Default: 0.50 (half-Kelly).
     pub kelly_fraction: f64,
 
     /// Markets with price > this value are skipped (near-certain outcomes).
@@ -40,6 +40,14 @@ pub struct SignalAgentConfig {
     /// One-way trading fee in basis points.
     /// Default: 10 bps.
     pub fee_bps: f64,
+
+    /// Reference bankroll in USD, used to scale Kelly fractions by market liquidity.
+    /// Should match `RiskConfig::bankroll`. Default: 10 000.
+    pub bankroll: f64,
+
+    /// Kelly fraction is scaled down when `market_liquidity < bankroll × this`.
+    /// Default: 0.1 (scale starts when liquidity < 10 % of bankroll).
+    pub liquidity_threshold: f64,
 }
 
 impl Default for SignalAgentConfig {
@@ -47,12 +55,14 @@ impl Default for SignalAgentConfig {
         Self {
             min_expected_value: 0.02,
             max_position_fraction: 0.05,
-            kelly_fraction: 0.25,
+            kelly_fraction: 0.50,
             max_market_price: 0.95,
             min_market_price: 0.05,
             min_confidence: 0.30,
             slippage_bps: 20.0,
             fee_bps: 10.0,
+            bankroll: 10_000.0,
+            liquidity_threshold: 0.1,
         }
     }
 }

@@ -191,6 +191,8 @@ mod tests {
             ask: prob + 0.01,
             volume: 1000.0,
             liquidity: 500.0,
+            resolution_date: None,
+            source_platform: String::new(),
             timestamp: Utc::now(),
         }
     }

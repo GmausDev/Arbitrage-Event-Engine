@@ -22,20 +22,24 @@
 //
 // Write-lock held only for state mutation; released before every publish.
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use common::{
-    Event, EventBus, GraphUpdate, MarketUpdate, TradeDirection, TradeSignal,
+    Event, EventBus, GraphUpdate, MarketUpdate, MarketSnapshot, TradeDirection, TradeSignal,
 };
 use metrics::counter;
 use tokio::sync::broadcast;
+use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
     config::GraphArbConfig,
     state::{new_shared_state, MarketPriceEntry, SharedGraphArbState},
+    xplatform::{find_pairs_for, try_xplatform_signals},
 };
 
 pub struct GraphArbAgent {
@@ -72,6 +76,17 @@ impl GraphArbAgent {
         let mut rx = self.rx.take().expect("rx already consumed");
         info!("graph_arb_agent: started");
 
+        // Evict stale state every 2 minutes:
+        //   - `snapshots` and `markets`: retain only IDs seen in recent Market /
+        //     MarketSnapshot events (seen-set pattern).
+        //   - `xplatform_last_emitted`: retain pairs whose cooldown timestamp is
+        //     still within 2 × xplatform_signal_cooldown_secs.  Older entries will
+        //     never suppress a signal again and are safe to drop.
+        let eviction_interval_secs = self.config.xplatform_signal_cooldown_secs * 2;
+        let mut eviction_tick = interval(Duration::from_secs(120));
+        eviction_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut seen_ids: HashSet<String> = HashSet::new();
+
         loop {
             tokio::select! {
                 biased;
@@ -79,9 +94,37 @@ impl GraphArbAgent {
                     info!("graph_arb_agent: cancelled, shutting down");
                     break;
                 }
+                _ = eviction_tick.tick() => {
+                    let cutoff = Utc::now()
+                        - chrono::Duration::seconds(eviction_interval_secs as i64);
+                    let mut state = self.state.write().await;
+
+                    let snap_before = state.snapshots.len();
+                    state.snapshots.retain(|k, _| seen_ids.contains(k));
+                    state.markets.retain(|k, _| seen_ids.contains(k));
+
+                    let xp_before = state.xplatform_last_emitted.len();
+                    state.xplatform_last_emitted.retain(|_, ts| *ts >= cutoff);
+
+                    let snaps_evicted = snap_before.saturating_sub(state.snapshots.len());
+                    let xp_evicted = xp_before.saturating_sub(state.xplatform_last_emitted.len());
+                    if snaps_evicted > 0 || xp_evicted > 0 {
+                        info!(snaps_evicted, xp_evicted,
+                            "graph_arb_agent: evicted stale entries");
+                    }
+                    seen_ids.clear();
+                }
                 result = rx.recv() => {
                     match result {
-                        Ok(ev) => self.handle_event(ev.as_ref()).await,
+                        Ok(ev) => {
+                            // Track active market IDs before dispatching.
+                            match ev.as_ref() {
+                                Event::Market(u)         => { seen_ids.insert(u.market.id.clone()); }
+                                Event::MarketSnapshot(s) => { seen_ids.insert(s.market_id.clone()); }
+                                _ => {}
+                            }
+                            self.handle_event(ev.as_ref()).await;
+                        }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!(
                                 "graph_arb_agent: lagged by {n} events \
@@ -106,6 +149,7 @@ impl GraphArbAgent {
         match event {
             Event::Graph(update) => self.on_graph_update(update).await,
             Event::Market(update) => self.on_market_update(update).await,
+            Event::MarketSnapshot(snap) => self.on_market_snapshot(snap).await,
             _ => {}
         }
     }
@@ -184,6 +228,62 @@ impl GraphArbAgent {
 
         if let Some(s) = signal {
             self.publish_signal(s);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MarketSnapshot — cross-platform arbitrage detection
+    // -----------------------------------------------------------------------
+
+    async fn on_market_snapshot(&self, snap: &MarketSnapshot) {
+        counter!("graph_arb_agent_market_snapshots_total").increment(1);
+
+        // Ignore snapshots with no platform tag — we cannot form cross-platform
+        // pairs without knowing which side each market belongs to.
+        if snap.source_platform.is_empty() {
+            return;
+        }
+
+        let now = Utc::now();
+
+        let signals = {
+            let mut state = self.state.write().await;
+            state.events_processed += 1;
+
+            // Update our snapshot cache.
+            state.snapshots.insert(snap.market_id.clone(), snap.clone());
+
+            // Find all cross-platform pairs involving this snapshot.
+            let pairs = find_pairs_for(
+                &snap.market_id,
+                &state.snapshots,
+                self.config.xplatform_min_title_similarity,
+            );
+
+            let mut collected: Vec<TradeSignal> = Vec::new();
+            for pair in &pairs {
+                let new_signals = try_xplatform_signals(
+                    pair,
+                    &self.config,
+                    &state.xplatform_last_emitted,
+                    now,
+                );
+                if !new_signals.is_empty() {
+                    // Update cooldown timestamp before releasing the lock.
+                    state
+                        .xplatform_last_emitted
+                        .insert(pair.cooldown_key(), now);
+                    state.signals_emitted += new_signals.len() as u64;
+                    state.xplatform_signals_emitted += new_signals.len() as u64;
+                    collected.extend(new_signals);
+                }
+            }
+            collected
+        };
+        // Lock released — safe to publish.
+
+        for signal in signals {
+            self.publish_signal(signal);
         }
     }
 

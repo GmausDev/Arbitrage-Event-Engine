@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use common::Timestamp;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,19 @@ pub struct SignalAgentState {
     /// Latest market-reported prices keyed by `market_id`.
     /// Populated on every `Event::Market` received.
     pub latest_market_prices: HashMap<String, f64>,
+
+    /// Latest available liquidity (USD) keyed by `market_id`.
+    /// Populated on every `Event::Market` and `Event::MarketSnapshot` received.
+    pub latest_liquidity: HashMap<String, f64>,
+
+    /// Latest bid/ask spread `(bid, ask)` keyed by `market_id`.
+    /// Populated on every `Event::MarketSnapshot` received.
+    pub latest_spreads: HashMap<String, (f64, f64)>,
+
+    /// Latest known resolution date keyed by `market_id`.
+    /// `None` means unknown / no expiry date available.
+    /// Populated on every `Event::MarketSnapshot` received.
+    pub latest_resolution_dates: HashMap<String, Option<Timestamp>>,
 
     /// Latest Bayesian beliefs keyed by `market_id`.
     /// Populated on every `Event::Posterior` received.

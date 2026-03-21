@@ -28,11 +28,11 @@ pub use types::{
 
 use std::sync::Arc;
 
-use common::{Event, EventBus, GraphUpdate, NodeProbUpdate};
+use common::{EdgeDirection, Event, EventBus, GraphUpdate, NodeProbUpdate};
 use metrics::counter;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Thread-safe handle to the [`MarketGraphEngine`].
 ///
@@ -193,6 +193,49 @@ impl MarketGraph {
                                 warn!("market_graph: failed to publish GraphUpdate: {e}");
                             } else {
                                 counter!("market_graph_updates_emitted_total").increment(1);
+                            }
+                        }
+                    }
+
+                    Event::RelationshipDiscovered(rd) => {
+                        // Dynamically add / update a correlation edge discovered by
+                        // the relationship_discovery engine.  Only add the edge when
+                        // both nodes are already in the graph (they are added on first
+                        // `Event::Market`); skip silently if either is absent.
+                        let mut engine = self.engine.write().await;
+                        let a_exists = engine.get_market(&rd.market_a).is_ok();
+                        let b_exists = engine.get_market(&rd.market_b).is_ok();
+
+                        if !a_exists || !b_exists {
+                            debug!(
+                                market_a = %rd.market_a,
+                                market_b = %rd.market_b,
+                                "market_graph: RelationshipDiscovered — one or both markets not yet in graph, skipping"
+                            );
+                        } else {
+                            // Use signed Pearson r as edge weight; strength as confidence.
+                            // For Undirected / AtoB: add a → b.
+                            // For BtoA: add b → a.
+                            // We do NOT add both directions to avoid circular amplification
+                            // in the BFS propagation loop.
+                            let (from, to) = match rd.direction {
+                                EdgeDirection::BtoA => (rd.market_b.as_str(), rd.market_a.as_str()),
+                                _                   => (rd.market_a.as_str(), rd.market_b.as_str()),
+                            };
+                            // Correlation can be negative; clamp to [-1, 1] for safety.
+                            let weight = rd.correlation.clamp(-1.0, 1.0);
+                            match engine.add_dependency(from, to, weight, rd.strength, EdgeType::Statistical) {
+                                Ok(_) => {
+                                    counter!("market_graph_relationships_applied_total").increment(1);
+                                    debug!(
+                                        from, to,
+                                        weight, strength = rd.strength,
+                                        "market_graph: added/updated statistical edge"
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!("market_graph: failed to add statistical edge {from}→{to}: {e}");
+                                }
                             }
                         }
                     }

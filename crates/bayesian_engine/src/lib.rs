@@ -29,11 +29,15 @@ pub use types::{BeliefState, EvidenceEntry, EvidenceSource, SignalResult};
 
 use std::sync::Arc;
 
+use std::collections::HashSet;
+use std::time::Duration;
+
 use chrono::Utc;
 use common::{Event, EventBus, PosteriorUpdate};
 use market_graph::MarketGraphEngine;
 use metrics::counter;
 use tokio::sync::{broadcast, RwLock};
+use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 use types::{delta_prob_to_log_odds, MAX_HISTORY};
@@ -69,6 +73,17 @@ const GRAPH_DOWNSTREAM_STRENGTH: f64 = 0.25;
 /// Strength applied to [`NewsSentiment`](EvidenceSource::NewsSentiment)
 /// evidence from `SentimentUpdate` events.
 const SENTIMENT_EVIDENCE_STRENGTH: f64 = 0.4;
+
+/// Strength applied to [`MacroIndicator`](EvidenceSource::MacroIndicator)
+/// evidence from `EconomicRelease` events.
+///
+/// Kept low (0.10) because macro surprises affect all markets equally —
+/// a blunt instrument until market-to-indicator linkage is implemented.
+const ECONOMIC_EVIDENCE_STRENGTH: f64 = 0.10;
+
+/// Minimum absolute normalised surprise required to trigger evidence injection.
+/// Surprises below this threshold are treated as in-line with expectations.
+const MIN_ECONOMIC_SURPRISE: f64 = 0.02;
 
 // ── Internal helper ───────────────────────────────────────────────────────────
 
@@ -364,6 +379,70 @@ impl BayesianModel {
         }
     }
 
+    /// `Event::EconomicRelease` handler — converts the actual-vs-forecast
+    /// surprise into a log-odds contribution and injects it into every tracked
+    /// market with `EvidenceSource::MacroIndicator`.
+    ///
+    /// Normalised surprise = `(actual − forecast) / |forecast|`, clamped to
+    /// `[−1.0, 1.0]`.  Releases without a forecast or below `MIN_ECONOMIC_SURPRISE`
+    /// are silently skipped.
+    async fn on_economic_release(&self, release: &common::EconomicRelease) {
+        let Some(forecast) = release.forecast else {
+            return; // can't compute surprise without a baseline
+        };
+        let denom = forecast.abs().max(0.001);
+        let normalised = ((release.value - forecast) / denom).clamp(-1.0, 1.0);
+
+        if normalised.abs() < MIN_ECONOMIC_SURPRISE {
+            return;
+        }
+
+        counter!("bayesian_engine_economic_releases_total").increment(1);
+
+        // Collect all tracked market IDs before acquiring the write lock.
+        let market_ids: Vec<String> = {
+            let eng = self.engine.read().await;
+            eng.market_ids().iter().map(|s| s.to_string()).collect()
+        };
+
+        let mut payloads: Vec<PosteriorUpdate> = Vec::new();
+        {
+            let mut eng = self.engine.write().await;
+            for market_id in &market_ids {
+                if let Err(e) = eng.ingest_evidence(
+                    market_id,
+                    normalised,   // log-odds delta ≈ normalised surprise
+                    EvidenceSource::MacroIndicator,
+                    ECONOMIC_EVIDENCE_STRENGTH,
+                ) {
+                    warn!("bayesian_engine: economic ingest_evidence failed for {market_id}: {e}");
+                    continue;
+                }
+                let _ = eng.compute_posterior(market_id);
+                if let Some(b) = eng.get_belief(market_id) {
+                    payloads.push(build_posterior_update(b));
+                }
+            }
+        }
+
+        debug!(
+            indicator  = %release.indicator,
+            actual     = release.value,
+            forecast,
+            normalised,
+            markets    = payloads.len(),
+            "bayesian_engine: EconomicRelease → PosteriorUpdates"
+        );
+
+        for p in payloads {
+            if let Err(e) = self.bus.publish(Event::Posterior(p)) {
+                warn!("bayesian_engine: failed to publish PosteriorUpdate (economic): {e}");
+            } else {
+                counter!("bayesian_engine_posterior_updates_emitted_total").increment(1);
+            }
+        }
+    }
+
     // ── Main event loop ───────────────────────────────────────────────────────
 
     /// Main event loop.
@@ -375,22 +454,71 @@ impl BayesianModel {
         let mut rx: broadcast::Receiver<Arc<Event>> = self.bus.subscribe();
         info!("bayesian_engine: started — listening for Market / Graph / Sentiment events");
 
+        // Evict beliefs for markets not seen in recent Market events every 5 min.
+        // This prevents the beliefs map from growing indefinitely and also stops
+        // economic releases from injecting evidence into thousands of stale markets.
+        let mut eviction_tick = interval(Duration::from_secs(300));
+        eviction_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut seen_market_ids: HashSet<String> = HashSet::new();
+
         loop {
             let event = tokio::select! {
+                biased;
                 _ = cancel.cancelled() => {
                     info!("bayesian_engine: shutdown requested, exiting");
                     break;
+                }
+                _ = eviction_tick.tick() => {
+                    let mut eng = self.engine.write().await;
+                    let before = eng.market_ids().len();
+                    eng.retain_active(&seen_market_ids);
+                    let evicted = before.saturating_sub(eng.market_ids().len());
+                    if evicted > 0 {
+                        info!(evicted, remaining = eng.market_ids().len(),
+                            "bayesian_engine: evicted stale beliefs");
+                    }
+                    seen_market_ids.clear();
+                    continue;
                 }
                 result = rx.recv() => result,
             };
 
             match event {
-                Ok(ev) => match ev.as_ref() {
-                    Event::Market(update)      => self.on_market_update(update).await,
-                    Event::Graph(gu)           => self.on_graph_update(gu).await,
-                    Event::Sentiment(sentiment) => self.on_sentiment_update(sentiment).await,
-                    _                          => {}
-                },
+                Ok(ev) => {
+                    // Track which markets are still active.
+                    if let Event::Market(u) = ev.as_ref() {
+                        seen_market_ids.insert(u.market.id.clone());
+                    }
+                    match ev.as_ref() {
+                    Event::Market(update)               => self.on_market_update(update).await,
+                    Event::Graph(gu)                    => self.on_graph_update(gu).await,
+                    Event::Sentiment(sentiment)         => self.on_sentiment_update(sentiment).await,
+                    Event::EconomicRelease(release)     => self.on_economic_release(release).await,
+                    Event::CalibrationUpdate(cal)       => {
+                        // Reduce trust in market prices proportionally to calibration error,
+                        // scoped to only the resolved market.  Applying the adjustment
+                        // globally would ratchet down precision on unrelated markets every
+                        // time any market resolves, silently degrading the whole engine.
+                        let adjustment = cal.calibration_error.min(0.15);
+                        let new_precision = (DEFAULT_MARKET_PRECISION - adjustment).max(0.40);
+                        debug!(
+                            market_id        = %cal.market_id,
+                            brier            = cal.brier_score,
+                            overall_brier    = cal.overall_brier,
+                            calibration_error = cal.calibration_error,
+                            new_precision,
+                            "bayesian_engine: CalibrationUpdate — adjusting market precision"
+                        );
+                        let mut eng = self.engine.write().await;
+                        if let Some(mp) = eng.get_belief(&cal.market_id).and_then(|b| b.market_prob) {
+                            let _ = eng.fuse_market_price(&cal.market_id, mp, new_precision);
+                            let _ = eng.compute_posterior(&cal.market_id);
+                        }
+                        counter!("bayesian_engine_calibration_adjustments_total").increment(1);
+                    }
+                    _                                   => {}
+                    }
+                }
 
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!(

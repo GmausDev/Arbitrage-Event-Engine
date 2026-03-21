@@ -23,6 +23,9 @@ use tokio_util::sync::CancellationToken;
 fn fast_config() -> AllocationConfig {
     AllocationConfig {
         tick_ms: 20,
+        // Tests publish via Event::Signal; disable the priority-engine path so
+        // raw signals are processed directly rather than via TopSignalsBatch.
+        use_priority_engine: false,
         ..Default::default()
     }
 }
@@ -172,6 +175,7 @@ async fn correlated_markets_get_penalty() {
         max_allocation_per_market:  0.10,
         total_capital:              1.0,
         bankroll:                   10_000.0,
+        use_priority_engine:        false,
     };
     let bus = EventBus::new();
     let rx  = bus.subscribe();
@@ -265,6 +269,7 @@ async fn high_raev_signal_gets_priority() {
         tick_ms:                   20,
         total_capital:             0.12,
         max_allocation_per_market: 0.10,
+        use_priority_engine:       false,
         ..Default::default()
     };
     let bus = EventBus::new();

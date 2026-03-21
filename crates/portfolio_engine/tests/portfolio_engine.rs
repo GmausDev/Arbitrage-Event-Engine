@@ -40,6 +40,7 @@ fn make_result(
         expected_value:    0.05,
         posterior_prob:    market_prob + 0.10,
         market_prob,
+        signal_source:     "test".to_string(),
         signal_timestamp:  now,
         timestamp:         now,
     };
@@ -449,6 +450,8 @@ async fn partial_fill_deploys_correct_capital() {
         expected_value:    0.05,
         posterior_prob:    0.65,
         market_prob:       0.55,
+        signal_source:     "test".to_string(),
+        signal_timestamp:  Utc::now(),
         timestamp:         Utc::now(),
     };
     let result = ExecutionResult {

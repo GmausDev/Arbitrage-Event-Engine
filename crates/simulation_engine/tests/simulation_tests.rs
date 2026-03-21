@@ -230,6 +230,7 @@ fn test_metrics_win_rate() {
         expected_value:    0.1,
         posterior_prob:    0.6,
         market_prob:       0.5,
+        signal_source:     "test".to_string(),
         signal_timestamp:  now,
         timestamp:         now,
     };
@@ -416,4 +417,480 @@ async fn test_historical_replay_publishes_market_events() {
     let ev2 = rx.recv().await.unwrap();
     assert!(matches!(ev1.as_ref(), Event::Market(_)));
     assert!(matches!(ev2.as_ref(), Event::Market(_)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Monte Carlo Simulator (MonteCarloSimulator) tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+use simulation_engine::{
+    compute_max_drawdown, compute_var_cvar, MarketStateSnapshot, MonteCarloSimConfig,
+    MonteCarloSimulator, SimulationState,
+};
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+
+fn three_market_state() -> SimulationState {
+    SimulationState::from_market_specs(
+        &[
+            MarketSpec { id: "S1".to_string(), initial_prob: 0.50, liquidity: 5_000.0 },
+            MarketSpec { id: "S2".to_string(), initial_prob: 0.35, liquidity: 3_000.0 },
+            MarketSpec { id: "S3".to_string(), initial_prob: 0.65, liquidity: 2_000.0 },
+        ],
+        10_000.0,
+    )
+}
+
+fn fast_sim_config(seed: u64) -> MonteCarloSimConfig {
+    MonteCarloSimConfig {
+        volatility:           0.02,
+        drift:                0.0,
+        mean_reversion_speed: 0.05,
+        shock_probability:    0.0,  // no shocks by default in unit tests
+        shock_magnitude:      0.05,
+        signal_threshold:     0.05,
+        position_fraction:    0.05,
+        seed:                 Some(seed),
+    }
+}
+
+// ── Test MC-1: deterministic run with fixed seed ──────────────────────────────
+
+#[test]
+fn test_mc_deterministic_with_seed() {
+    let state = three_market_state();
+    let sim1  = MonteCarloSimulator::new(fast_sim_config(42));
+    let sim2  = MonteCarloSimulator::new(fast_sim_config(42));
+
+    let r1 = sim1.run_monte_carlo(&state, 20, 50);
+    let r2 = sim2.run_monte_carlo(&state, 20, 50);
+
+    assert_eq!(
+        r1.paths.len(), r2.paths.len(),
+        "both runs must produce the same number of paths"
+    );
+    assert!(
+        (r1.expected_return - r2.expected_return).abs() < 1e-12,
+        "fixed-seed runs must yield identical expected_return: {} vs {}",
+        r1.expected_return, r2.expected_return
+    );
+    assert!(
+        (r1.var_95 - r2.var_95).abs() < 1e-12,
+        "fixed-seed runs must yield identical var_95"
+    );
+    // Different seed → different result.
+    let sim3 = MonteCarloSimulator::new(fast_sim_config(999));
+    let r3   = sim3.run_monte_carlo(&state, 20, 50);
+    // The probability that two independent seeds give the SAME expected_return
+    // to 12 decimal places is essentially zero.
+    assert!(
+        (r1.expected_return - r3.expected_return).abs() > 1e-10,
+        "different seeds must produce different results"
+    );
+}
+
+// ── Test MC-2: result struct contains correct path count ──────────────────────
+
+#[test]
+fn test_mc_path_count() {
+    let state = three_market_state();
+    let sim   = MonteCarloSimulator::new(fast_sim_config(1));
+
+    for &n in &[1usize, 10, 100] {
+        let r = sim.run_monte_carlo(&state, n, 50);
+        assert_eq!(r.paths.len(), n, "expected {n} paths, got {}", r.paths.len());
+    }
+}
+
+// ── Test MC-3: all result metrics are finite ──────────────────────────────────
+
+#[test]
+fn test_mc_all_metrics_finite() {
+    let state = three_market_state();
+    let sim   = MonteCarloSimulator::new(fast_sim_config(7));
+    let r     = sim.run_monte_carlo(&state, 200, 100);
+
+    assert!(r.expected_return.is_finite(),    "expected_return must be finite");
+    assert!(r.return_std.is_finite(),         "return_std must be finite");
+    assert!(r.sharpe_ratio.is_finite(),       "sharpe_ratio must be finite");
+    assert!(r.max_drawdown.is_finite(),       "max_drawdown must be finite");
+    assert!(r.var_95.is_finite(),             "var_95 must be finite");
+    assert!(r.cvar_95.is_finite(),            "cvar_95 must be finite");
+    assert!(r.profit_probability.is_finite(), "profit_probability must be finite");
+
+    assert!(r.max_drawdown  >= 0.0 && r.max_drawdown  <= 1.0, "drawdown ∈ [0,1]");
+    assert!(r.var_95        >= 0.0,                           "VaR ≥ 0");
+    assert!(r.cvar_95       >= 0.0,                           "CVaR ≥ 0");
+    assert!(r.profit_probability >= 0.0 && r.profit_probability <= 1.0,
+            "profit_probability ∈ [0,1]");
+}
+
+// ── Test MC-4: increasing simulations reduces estimation variance ──────────────
+
+#[test]
+fn test_mc_more_simulations_reduce_estimation_variance() {
+    // Law of large numbers: the std-error of the mean estimate shrinks as
+    //   SE = return_std / sqrt(N).
+    // With 50 paths vs 1 000 paths the SE should be √(1000/50) ≈ 4.5× tighter
+    // for the larger run.  We assert SE_hi < SE_lo (Issue 12 fix).
+    let state  = three_market_state();
+    let sim_lo = MonteCarloSimulator::new(fast_sim_config(100));
+    let sim_hi = MonteCarloSimulator::new(fast_sim_config(100));
+
+    let r_lo = sim_lo.run_monte_carlo(&state, 50,   100);
+    let r_hi = sim_hi.run_monte_carlo(&state, 1_000, 100);
+
+    // Both must be finite.
+    assert!(r_lo.expected_return.is_finite(), "r_lo expected_return must be finite");
+    assert!(r_hi.expected_return.is_finite(), "r_hi expected_return must be finite");
+
+    // Std-error of the mean = return_std / sqrt(N).
+    let se_lo = r_lo.return_std / (50_f64).sqrt();
+    let se_hi = r_hi.return_std / (1_000_f64).sqrt();
+
+    // The 1 000-path estimate must have a strictly tighter std-error.
+    assert!(
+        se_hi < se_lo,
+        "1000-path SE ({se_hi:.6}) must be tighter than 50-path SE ({se_lo:.6})"
+    );
+
+    // Sanity: profit_probability is bounded.
+    assert!(r_lo.profit_probability >= 0.0 && r_lo.profit_probability <= 1.0);
+    assert!(r_hi.profit_probability >= 0.0 && r_hi.profit_probability <= 1.0);
+}
+
+// ── Test MC-5: shock injection changes the return distribution ────────────────
+
+#[test]
+fn test_mc_shock_injection_changes_distribution() {
+    let state = three_market_state();
+
+    let no_shock_cfg = MonteCarloSimConfig {
+        shock_probability: 0.0,
+        ..fast_sim_config(55)
+    };
+    let shock_cfg = MonteCarloSimConfig {
+        shock_probability: 0.30,  // shock 30% of ticks
+        shock_magnitude:   0.10,
+        ..fast_sim_config(55)    // same base seed → same Gaussian path, different shock path
+    };
+
+    let sim_no_shock = MonteCarloSimulator::new(no_shock_cfg);
+    let sim_shock    = MonteCarloSimulator::new(shock_cfg);
+
+    let r_clean = sim_no_shock.run_monte_carlo(&state, 500, 80);
+    let r_shock  = sim_shock.run_monte_carlo(&state,   500, 80);
+
+    // Shocks should increase overall volatility (return_std should be higher).
+    // We test that the two distributions are NOT identical (they cannot be,
+    // given that shocks add extra randomness with the same Gaussian seed but
+    // an independent shock RNG stream).
+    let diff = (r_shock.return_std - r_clean.return_std).abs();
+    assert!(
+        diff > 1e-6,
+        "shock injection must change return_std: no-shock={:.6}, shock={:.6}",
+        r_clean.return_std, r_shock.return_std
+    );
+}
+
+// ── Test MC-6: mean reversion stabilizes probabilities ────────────────────────
+
+#[test]
+fn test_mc_mean_reversion_reduces_volatility() {
+    // A high mean-reversion speed should anchor prices close to implied_prob,
+    // reducing the spread of final portfolio values.
+    let state = three_market_state();
+
+    let low_rev_cfg = MonteCarloSimConfig {
+        mean_reversion_speed: 0.0,   // no reversion → pure random walk
+        volatility:           0.03,
+        ..fast_sim_config(77)
+    };
+    let high_rev_cfg = MonteCarloSimConfig {
+        mean_reversion_speed: 0.50,  // strong reversion toward implied_prob
+        volatility:           0.03,
+        ..fast_sim_config(77)
+    };
+
+    let sim_lo = MonteCarloSimulator::new(low_rev_cfg);
+    let sim_hi = MonteCarloSimulator::new(high_rev_cfg);
+
+    let r_lo = sim_lo.run_monte_carlo(&state, 400, 100);
+    let r_hi = sim_hi.run_monte_carlo(&state, 400, 100);
+
+    // Strong mean reversion should reduce return dispersion.
+    assert!(
+        r_hi.return_std <= r_lo.return_std + 1e-4,
+        "high mean-reversion should not exceed low mean-reversion volatility: \
+         high={:.6} > low={:.6}",
+        r_hi.return_std, r_lo.return_std
+    );
+}
+
+// ── Test MC-7: portfolio value evolves correctly (no-signal baseline) ──────────
+
+#[test]
+fn test_mc_no_trades_keeps_equity_stable() {
+    // With a very high signal threshold (no positions ever open), the portfolio
+    // value should remain exactly at the initial value.
+    let state = SimulationState::from_market_specs(
+        &[MarketSpec { id: "FLAT".to_string(), initial_prob: 0.50, liquidity: 1_000.0 }],
+        5_000.0,
+    );
+    let cfg = MonteCarloSimConfig {
+        signal_threshold: 1.0,  // impossible to exceed → no trades
+        volatility:       0.02,
+        drift:            0.0,
+        ..fast_sim_config(3)
+    };
+    let sim = MonteCarloSimulator::new(cfg);
+    let r   = sim.run_monte_carlo(&state, 50, 100);
+
+    for (i, path) in r.paths.iter().enumerate() {
+        assert!(
+            (path.final_value - 5_000.0).abs() < 1e-9,
+            "path {i}: expected equity=5000, got {}", path.final_value
+        );
+        assert!(
+            path.drawdown.abs() < 1e-9,
+            "path {i}: expected drawdown=0, got {}", path.drawdown
+        );
+    }
+    assert!(
+        r.expected_return.abs() < 1e-9,
+        "expected_return must be 0 when no trades: {}", r.expected_return
+    );
+}
+
+// ── Test MC-8: drift changes the return distribution ─────────────────────────
+//
+// In a mean-reverting model, drift shifts the equilibrium price rather than
+// uniformly lifting returns (a BUY strategy may trade against positive drift).
+// We test that:
+//   1. Both runs complete and produce finite metrics.
+//   2. Different drift values produce measurably different distributions.
+
+#[test]
+fn test_mc_drift_changes_distribution() {
+    let state = SimulationState::from_market_specs(
+        &[MarketSpec { id: "D".to_string(), initial_prob: 0.50, liquidity: 1_000.0 }],
+        10_000.0,
+    );
+
+    let zero_drift = MonteCarloSimConfig { drift:  0.0,   ..fast_sim_config(11) };
+    let neg_drift  = MonteCarloSimConfig { drift: -0.015, ..fast_sim_config(11) };
+
+    let r_flat = MonteCarloSimulator::new(zero_drift).run_monte_carlo(&state, 400, 150);
+    let r_down = MonteCarloSimulator::new(neg_drift) .run_monte_carlo(&state, 400, 150);
+
+    // Both must be finite.
+    assert!(r_flat.expected_return.is_finite());
+    assert!(r_down.expected_return.is_finite());
+
+    // Negative drift should produce a clearly lower (or equal) expected return
+    // than zero drift, since market prices trend downward.
+    assert!(
+        r_down.expected_return <= r_flat.expected_return + 0.005,
+        "negative drift should not significantly exceed zero drift: \
+         neg={:.6}, flat={:.6}",
+        r_down.expected_return, r_flat.expected_return
+    );
+
+    // The two distributions should be meaningfully different.
+    let diff = (r_flat.expected_return - r_down.expected_return).abs();
+    assert!(
+        diff > 1e-8,
+        "different drift values must produce different return distributions"
+    );
+}
+
+// ── Test MC-9: zero and empty inputs return default result ─────────────────────
+
+#[test]
+fn test_mc_zero_simulations_returns_default() {
+    let state = three_market_state();
+    let sim   = MonteCarloSimulator::new(fast_sim_config(0));
+
+    let r_zero_sims  = sim.run_monte_carlo(&state, 0, 100);
+    let r_zero_steps = sim.run_monte_carlo(&state, 100, 0);
+
+    let empty_state = SimulationState { markets: vec![], portfolio_value: 10_000.0 };
+    let r_empty     = sim.run_monte_carlo(&empty_state, 100, 100);
+
+    for r in [&r_zero_sims, &r_zero_steps, &r_empty] {
+        assert_eq!(r.paths.len(), 0);
+        assert_eq!(r.expected_return, 0.0);
+        assert_eq!(r.var_95, 0.0);
+    }
+}
+
+// ── Test MC-10: VaR ≤ CVaR for any return distribution ───────────────────────
+
+#[test]
+fn test_mc_var_le_cvar() {
+    let state = three_market_state();
+    let sim   = MonteCarloSimulator::new(MonteCarloSimConfig {
+        shock_probability: 0.05,
+        ..fast_sim_config(22)
+    });
+    let r = sim.run_monte_carlo(&state, 500, 100);
+
+    assert!(
+        r.var_95 <= r.cvar_95 + 1e-9,
+        "VaR must be ≤ CVaR: var={:.6}, cvar={:.6}",
+        r.var_95, r.cvar_95
+    );
+}
+
+// ── Test MC-11: compute_var_cvar helper ───────────────────────────────────────
+
+#[test]
+fn test_compute_var_cvar_known_distribution() {
+    // 10 paths. Use 80% confidence so tail_size = ceil(0.20 * 10) = 2,
+    // which exercises the CVaR averaging formula (Issue 6 fix).
+    // Sorted: [-0.20, -0.10, -0.05, 0.0, 0.05, 0.05, 0.10, 0.15, 0.20, 0.25]
+    // (No -0.15 value so the two worst are exactly -0.20 and -0.10.)
+    let returns = vec![-0.20, 0.25, -0.10, 0.15, -0.05, 0.10, 0.05, 0.05, 0.0, 0.20];
+    let (var, cvar) = compute_var_cvar(&returns, 0.80);
+
+    // VaR = -sorted[tail_size - 1] = -sorted[1] = -(-0.10) = 0.10.
+    assert!(
+        (var - 0.10).abs() < 1e-9,
+        "expected VaR=0.10, got {:.6}", var
+    );
+    // CVaR = mean of 2 worst paths: (-0.20 + -0.10) / 2 → positive loss = 0.15.
+    assert!(
+        (cvar - 0.15).abs() < 1e-9,
+        "expected CVaR=0.15, got {:.6}", cvar
+    );
+    assert!(var >= 0.0,  "VaR must be non-negative");
+    assert!(cvar >= 0.0, "CVaR must be non-negative");
+    // CVaR ≥ VaR (expected shortfall is at least as bad as VaR).
+    assert!(cvar >= var - 1e-9, "CVaR must be ≥ VaR");
+}
+
+// ── Test MC-12: compute_max_drawdown helper ───────────────────────────────────
+
+#[test]
+fn test_compute_max_drawdown_known_series() {
+    // Equity: 100 → 150 → 90 → 120 → 60 → 200.
+    // Peak at 150: drawdown to 90 = (150-90)/150 = 0.40.
+    // Peak still 150: drawdown to 60 = (150-60)/150 = 0.60.  ← maximum.
+    let series = vec![100.0, 150.0, 90.0, 120.0, 60.0, 200.0];
+    let dd = compute_max_drawdown(&series);
+    let expected = (150.0 - 60.0) / 150.0; // 0.60
+    assert!(
+        (dd - expected).abs() < 1e-9,
+        "expected max_drawdown={:.4}, got {:.4}", expected, dd
+    );
+}
+
+#[test]
+fn test_compute_max_drawdown_monotone_increase_is_zero() {
+    let series = vec![100.0, 110.0, 120.0, 130.0, 140.0];
+    assert_eq!(compute_max_drawdown(&series), 0.0);
+}
+
+// ── Test MC-13: config validation ─────────────────────────────────────────────
+
+#[test]
+fn test_mc_config_validation() {
+    // Valid default must pass.
+    assert!(MonteCarloSimConfig::default().validate().is_ok());
+
+    // Negative volatility.
+    assert!(MonteCarloSimConfig { volatility: -0.01, ..MonteCarloSimConfig::default() }
+        .validate()
+        .is_err());
+
+    // shock_probability > 1.
+    assert!(MonteCarloSimConfig { shock_probability: 1.5, ..MonteCarloSimConfig::default() }
+        .validate()
+        .is_err());
+
+    // signal_threshold = 0.
+    assert!(MonteCarloSimConfig { signal_threshold: 0.0, ..MonteCarloSimConfig::default() }
+        .validate()
+        .is_err());
+
+    // position_fraction > 1.
+    assert!(MonteCarloSimConfig { position_fraction: 1.5, ..MonteCarloSimConfig::default() }
+        .validate()
+        .is_err());
+}
+
+// ── Integration Test: full pipeline — strategies produce trades, portfolio updates
+
+#[test]
+fn test_mc_integration_full_pipeline() {
+    // Multi-market simulation with shocks and active strategy.
+    // Verifies the complete path: market evolution → shock → posterior update
+    // → signal generation → position tracking → risk metrics.
+    let state = SimulationState {
+        markets: vec![
+            MarketStateSnapshot {
+                id:             "INT-A".to_string(),
+                probability:    0.40,
+                implied_prob:   0.50,  // big spread → mean reversion kicks in
+                posterior_prob: 0.55,  // edge > threshold → trades open immediately
+                liquidity:      10_000.0,
+            },
+            MarketStateSnapshot {
+                id:             "INT-B".to_string(),
+                probability:    0.60,
+                implied_prob:   0.50,
+                posterior_prob: 0.45,  // sell signal
+                liquidity:       8_000.0,
+            },
+        ],
+        portfolio_value: 20_000.0,
+    };
+
+    let cfg = MonteCarloSimConfig {
+        volatility:           0.02,
+        drift:                0.0,
+        mean_reversion_speed: 0.10,
+        shock_probability:    0.05,
+        shock_magnitude:      0.06,
+        signal_threshold:     0.05,
+        position_fraction:    0.05,
+        seed:                 Some(999),
+    };
+    let sim = MonteCarloSimulator::new(cfg);
+    let r   = sim.run_monte_carlo(&state, 200, 100);
+
+    // Basic sanity checks.
+    assert_eq!(r.paths.len(), 200, "must produce 200 paths");
+    assert!(r.expected_return.is_finite(),    "expected_return finite");
+    assert!(r.sharpe_ratio.is_finite(),       "sharpe finite");
+    assert!(r.max_drawdown >= 0.0,            "drawdown ≥ 0");
+    assert!(r.var_95       >= 0.0,            "VaR ≥ 0");
+    assert!(r.cvar_95      >= r.var_95 - 1e-9, "CVaR ≥ VaR");
+    assert!(r.profit_probability >= 0.0 && r.profit_probability <= 1.0,
+            "profit_prob ∈ [0,1]");
+
+    // Paths should have non-trivial per-tick returns (strategy was active).
+    let active_paths = r.paths.iter().filter(|p| {
+        p.returns.iter().any(|&ret| ret.abs() > 1e-12)
+    }).count();
+    assert!(
+        active_paths > 0,
+        "at least some paths should have non-zero tick returns (strategy active)"
+    );
+
+    // Per-path drawdowns must be ∈ [0, 1].
+    for (i, path) in r.paths.iter().enumerate() {
+        assert!(
+            path.drawdown >= 0.0 && path.drawdown <= 1.0 + 1e-9,
+            "path {i} drawdown={} out of [0,1]", path.drawdown
+        );
+        assert!(
+            path.final_value.is_finite(),
+            "path {i} final_value must be finite"
+        );
+        assert_eq!(
+            path.returns.len(), 100,
+            "path {i} must have 100 tick returns"
+        );
+    }
 }

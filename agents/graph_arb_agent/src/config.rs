@@ -37,6 +37,34 @@ pub struct GraphArbConfig {
     /// Upper price bound: suppress signals for markets priced above this.
     /// Default: 0.95.
     pub max_market_price: f64,
+
+    // ── Cross-platform arbitrage ───────────────────────────────────────────
+
+    /// Minimum Jaccard title-similarity score (word-token overlap) for two
+    /// markets to be considered the same real-world event across platforms.
+    /// Default: 0.40 (40 % word overlap — enough for "Will X win?" phrasing
+    /// differences between Polymarket and Kalshi).
+    pub xplatform_min_title_similarity: f64,
+
+    /// Minimum raw probability spread required between the two platforms.
+    /// Default: 0.02 (2 percentage points).
+    pub xplatform_min_spread: f64,
+
+    /// One-way trading cost on each platform (slippage + fees).
+    /// The net EV is `spread − 2 × xplatform_trading_cost`.
+    /// Default: 0.008 (80 bps per side → 160 bps round-trip).
+    pub xplatform_trading_cost: f64,
+
+    /// Maximum position fraction per cross-platform signal.
+    /// Kept smaller than `max_position_fraction` because simultaneous
+    /// execution on two platforms carries more implementation risk.
+    /// Default: 0.03.
+    pub xplatform_max_position_fraction: f64,
+
+    /// Minimum seconds between re-emitting a signal for the same
+    /// cross-platform pair, to avoid flooding the bus on every tick.
+    /// Default: 60.
+    pub xplatform_signal_cooldown_secs: u64,
 }
 
 impl Default for GraphArbConfig {
@@ -49,6 +77,11 @@ impl Default for GraphArbConfig {
             confidence_scale: 0.20,
             min_market_price: 0.05,
             max_market_price: 0.95,
+            xplatform_min_title_similarity: 0.40,
+            xplatform_min_spread: 0.02,
+            xplatform_trading_cost: 0.008,
+            xplatform_max_position_fraction: 0.03,
+            xplatform_signal_cooldown_secs: 60,
         }
     }
 }
@@ -80,6 +113,22 @@ impl GraphArbConfig {
         }
         if self.min_market_price >= self.max_market_price {
             return Err("min_market_price must be < max_market_price".into());
+        }
+        if !self.xplatform_min_title_similarity.is_finite()
+            || !(0.0..=1.0).contains(&self.xplatform_min_title_similarity)
+        {
+            return Err("xplatform_min_title_similarity must be in [0, 1]".into());
+        }
+        if !self.xplatform_min_spread.is_finite() || self.xplatform_min_spread < 0.0 {
+            return Err("xplatform_min_spread must be non-negative and finite".into());
+        }
+        if !self.xplatform_trading_cost.is_finite() || self.xplatform_trading_cost < 0.0 {
+            return Err("xplatform_trading_cost must be non-negative and finite".into());
+        }
+        if !self.xplatform_max_position_fraction.is_finite()
+            || !(0.0..=1.0).contains(&self.xplatform_max_position_fraction)
+        {
+            return Err("xplatform_max_position_fraction must be in [0, 1]".into());
         }
         Ok(())
     }

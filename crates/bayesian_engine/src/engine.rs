@@ -276,7 +276,10 @@ impl BayesianEngine {
             .ok_or_else(|| BayesianError::MarketNotFound(market_id.to_string()))?;
 
         let applied = log_odds_delta * strength;
-        belief.evidence_log_odds += applied;
+        // Clamp the accumulator to prevent posterior saturation over long runs.
+        // Beyond ±10 log-odds (~0.005 / 0.995 probability) additional evidence
+        // has negligible effect and causes the posterior to become unresponsive.
+        belief.evidence_log_odds = (belief.evidence_log_odds + applied).clamp(-10.0, 10.0);
 
         // Rotate history FIFO — oldest entry dropped when cap is reached (O(1)).
         if belief.update_history.len() >= MAX_HISTORY {
@@ -653,6 +656,15 @@ impl BayesianEngine {
             }
         }
         updated
+    }
+
+    /// Remove beliefs for markets that are no longer actively broadcasting.
+    ///
+    /// Called periodically from the async event loop with the set of market IDs
+    /// seen in recent `Event::Market` events.  Markets absent from `active_ids`
+    /// are evicted; their evidence state and history are freed.
+    pub fn retain_active(&mut self, active_ids: &std::collections::HashSet<String>) {
+        self.beliefs.retain(|id, _| active_ids.contains(id.as_str()));
     }
 }
 

@@ -1,13 +1,13 @@
 // agents/market_scanner/src/kalshi.rs
 // Kalshi v2 REST API client.
 //
-// API reference: https://trading-api.kalshi.com/trade-api/v2
+// API reference: https://api.elections.kalshi.com/trade-api/v2
 //
-// Wire format modelled on the public `/markets` endpoint:
-//   GET /trade-api/v2/markets?status=open&limit=100&cursor=<cursor>
+// Wire format: GET /markets?limit=100&cursor=<cursor>
+// Returns { cursor, markets: [...] }.
+// Prices are in "dollars" string format (e.g. "0.4200" = 42 cents probability).
 //
-// Public endpoints (market list, prices) do not require authentication.
-// Placing orders requires JWT — out of scope for this scanner.
+// Public market endpoints do not require authentication.
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -21,8 +21,6 @@ use tracing::{debug, warn};
 use crate::source::MarketDataSource;
 
 /// Maximum pages to fetch in a single `fetch_markets` call.
-/// Prevents an infinite loop if the API returns a cursor that never terminates.
-/// 50 pages × 100 markets/page = 5 000 markets maximum.
 const MAX_PAGES: usize = 50;
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -42,37 +40,30 @@ struct KalshiMarket {
     ticker: String,
 
     /// Human-readable market title.
+    #[allow(dead_code)]
     title: Option<String>,
 
-    /// Best YES bid in cents (0–99).
-    yes_bid: Option<u32>,
+    /// Best YES bid in dollars as a decimal string (e.g. "0.4200").
+    yes_bid_dollars: Option<String>,
 
-    /// Best YES ask in cents (1–100).
-    yes_ask: Option<u32>,
+    /// Best YES ask in dollars as a decimal string (e.g. "0.4400").
+    yes_ask_dollars: Option<String>,
 
-    /// Cumulative YES contract volume (number of contracts traded).
-    volume: Option<f64>,
+    /// Cumulative volume in dollar-cents (string).
+    volume_fp: Option<String>,
 
-    /// Market status: `"open"` | `"closed"` | `"settled"`.
+    /// Market status: `"active"` | `"closed"` | `"settled"`.
     status: Option<String>,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
-/// Kalshi v2 REST API client.
-///
-/// Fetches all open markets, normalises cent-unit bid/ask prices into
-/// `probability` in [0, 1], and returns [`MarketNode`] values.
 pub struct KalshiClient {
     http: Client,
     base_url: String,
 }
 
 impl KalshiClient {
-    /// Construct a client pointing at `base_url` with the given HTTP timeout.
-    ///
-    /// In production set `base_url` to
-    /// `"https://trading-api.kalshi.com/trade-api/v2"`.
     pub fn new(base_url: impl Into<String>, timeout_ms: u64) -> anyhow::Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
@@ -83,9 +74,6 @@ impl KalshiClient {
         Ok(Self { http, base_url: base_url.into() })
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    /// Fetch a single page of markets.  Returns `(nodes, next_cursor)`.
     async fn fetch_page(
         &self,
         cursor: Option<&str>,
@@ -93,7 +81,7 @@ impl KalshiClient {
         let mut req = self
             .http
             .get(format!("{}/markets", self.base_url))
-            .query(&[("status", "open"), ("limit", "100")]);
+            .query(&[("limit", "100")]);
 
         if let Some(c) = cursor {
             req = req.query(&[("cursor", c)]);
@@ -114,21 +102,28 @@ impl KalshiClient {
     }
 
     /// Normalise a raw Kalshi market into a canonical [`MarketNode`].
-    ///
-    /// Returns `None` for:
-    /// - Non-open markets (closed / settled)
-    /// - Markets with no bid/ask quote
     fn normalise(m: KalshiMarket) -> Option<MarketNode> {
-        if m.status.as_deref() != Some("open") {
+        // Only active markets (not closed/settled).
+        if m.status.as_deref() != Some("active") {
             return None;
         }
 
-        let yes_bid = m.yes_bid? as f64 / 100.0;
-        let yes_ask = m.yes_ask? as f64 / 100.0;
+        // Parse dollar-string prices → probability in [0, 1].
+        let yes_bid: f64 = m.yes_bid_dollars.as_deref()?.parse().ok()?;
+        let yes_ask: f64 = m.yes_ask_dollars.as_deref()?.parse().ok()?;
 
-        // Mid-price (cents → probability fraction).
+        // Skip markets with no live quote.
+        if yes_bid <= 0.0 && yes_ask <= 0.0 {
+            return None;
+        }
+
         let probability = ((yes_bid + yes_ask) / 2.0).clamp(0.0, 1.0);
-        let liquidity = m.volume.unwrap_or(0.0);
+
+        // volume_fp is a string like "123456.78".
+        let liquidity = m.volume_fp
+            .as_deref()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
 
         Some(MarketNode {
             id: m.ticker,
@@ -147,7 +142,6 @@ impl MarketDataSource for KalshiClient {
         "kalshi"
     }
 
-    /// Fetches all open Kalshi markets, paging through cursors until done.
     async fn fetch_markets(&self) -> anyhow::Result<Vec<MarketNode>> {
         let mut all = Vec::new();
         let mut cursor: Option<String> = None;

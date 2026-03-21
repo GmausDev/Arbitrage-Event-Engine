@@ -44,6 +44,33 @@ pub struct RiskState {
 
     /// Signals that failed at least one check.
     pub trades_rejected: u64,
+
+    // ── Cost model state ──────────────────────────────────────────────────────
+
+    /// Per-market liquidity in USD, updated from `Event::Market` events.
+    pub market_liquidity: HashMap<String, f64>,
+
+    /// EMA of observed execution latency in ms, updated from `EdgeDecayReport`.
+    /// Initialised to `CostModelConfig::default().expected_latency_ms`.
+    pub avg_latency_ms: f64,
+
+    /// Cumulative sum of gross edges seen (for edge-efficiency diagnostics).
+    pub gross_edge_sum: f64,
+
+    /// Cumulative sum of net edges after costs.
+    pub net_edge_sum: f64,
+
+    /// Cumulative sum of total costs.
+    pub total_cost_sum: f64,
+
+    /// Number of signals that reached the cost gate (denominator for averages).
+    pub cost_trades_count: u64,
+
+    /// Signals rejected because `net_edge ≤ 0`.
+    pub trades_rejected_negative_edge: u64,
+
+    /// Signals rejected because `expected_profit < min_expected_profit_usd`.
+    pub trades_rejected_insufficient_profit: u64,
 }
 
 impl Default for RiskState {
@@ -58,6 +85,14 @@ impl Default for RiskState {
             signals_seen:     0,
             trades_approved:  0,
             trades_rejected:  0,
+            market_liquidity:                    HashMap::new(),
+            avg_latency_ms:                      50.0,
+            gross_edge_sum:                      0.0,
+            net_edge_sum:                        0.0,
+            total_cost_sum:                      0.0,
+            cost_trades_count:                   0,
+            trades_rejected_negative_edge:       0,
+            trades_rejected_insufficient_profit: 0,
         }
     }
 }

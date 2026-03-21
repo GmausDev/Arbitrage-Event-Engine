@@ -13,6 +13,10 @@ pub enum RejectionReason {
     ClusterExposureFull,
     /// Approved size collapsed to ≤ 0 after all resize steps
     ZeroApprovedSize,
+    /// `net_edge = gross_edge − total_cost ≤ 0`: costs exceed the raw edge
+    NegativeNetEdge,
+    /// `expected_profit = net_edge × position_size_usd < min_expected_profit_usd`
+    InsufficientExpectedProfit,
 }
 
 impl std::fmt::Display for RejectionReason {
@@ -22,7 +26,9 @@ impl std::fmt::Display for RejectionReason {
             Self::DrawdownProtection  => write!(f, "drawdown protection triggered"),
             Self::TotalExposureFull   => write!(f, "total exposure limit reached"),
             Self::ClusterExposureFull => write!(f, "cluster exposure limit reached"),
-            Self::ZeroApprovedSize    => write!(f, "approved size collapsed to zero"),
+            Self::ZeroApprovedSize             => write!(f, "approved size collapsed to zero"),
+            Self::NegativeNetEdge              => write!(f, "net edge negative after costs"),
+            Self::InsufficientExpectedProfit   => write!(f, "expected profit below minimum threshold"),
         }
     }
 }

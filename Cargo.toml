@@ -21,6 +21,8 @@ members = [
     "crates/strategy_research",
     "crates/data_ingestion",
     "crates/signal_priority_engine",
+    "crates/calibration",
+    "crates/cost_model",
 
     # Agent crates (library, spawned as async tasks from main)
     "agents/market_scanner",
@@ -37,6 +39,9 @@ members = [
 
     # Integration test harness (run: cargo run --bin integration_harness)
     "tests/integration_harness",
+
+    # Before/After cost model backtest comparison
+    "tests/cost_model_backtest",
 ]
 
 [workspace.dependencies]
@@ -90,3 +95,4 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 # Internal crates
 common                 = { path = "crates/common" }
 signal_priority_engine = { path = "crates/signal_priority_engine" }
+cost_model             = { path = "crates/cost_model" }

@@ -46,6 +46,11 @@ pub struct PortfolioPosition {
     /// When the current position was opened (or last replaced by a new fill).
     pub opened_at: DateTime<Utc>,
 
-    /// Optional metadata tags (e.g. strategy name, niche, signal source).
+    /// Originating strategy agent (e.g. "signal_agent", "graph_arb_agent").
+    /// Sourced from `ApprovedTrade::signal_source` at fill time.
+    /// Used to bucket closed-position PnL by strategy for performance attribution.
+    pub source: String,
+
+    /// Optional metadata tags (e.g. niche, signal source).
     pub tags: Vec<String>,
 }

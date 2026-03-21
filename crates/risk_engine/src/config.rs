@@ -1,5 +1,6 @@
 // crates/risk_engine/src/config.rs
 
+use cost_model::CostModelConfig;
 use serde::{Deserialize, Serialize};
 
 /// Configuration thresholds for the Risk Engine.
@@ -44,6 +45,13 @@ pub struct RiskConfig {
     /// engine ignores raw signals and only evaluates `Event::OptimizedSignal`,
     /// preventing every intent from being approved twice.
     pub accept_raw_signals: bool,
+
+    /// Cost model parameters embedded directly in the risk config.
+    ///
+    /// Applied as a hard gate inside `evaluate()` after the EV check and
+    /// before exposure bookkeeping.  Signals with negative net edge or
+    /// insufficient expected profit in USD are rejected before any state change.
+    pub cost: CostModelConfig,
 }
 
 impl Default for RiskConfig {
@@ -58,6 +66,7 @@ impl Default for RiskConfig {
             // false: SignalPriorityEngine is the default routing mode.
             // Set to true only when running without the priority engine.
             accept_raw_signals:    false,
+            cost:                  CostModelConfig::default(),
         }
     }
 }

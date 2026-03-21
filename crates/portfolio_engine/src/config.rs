@@ -14,6 +14,10 @@ pub struct PortfolioConfig {
     /// Positions that exceed this cap are trimmed by `apply_risk_adjustments`.
     /// Should match `RiskConfig::max_position_fraction` for consistency.
     pub max_position_fraction: f64,
+
+    /// How long (in seconds) a position may be held before it is automatically
+    /// closed at its last known market price.  0 disables TTL expiry.
+    pub position_ttl_secs: u64,
 }
 
 impl Default for PortfolioConfig {
@@ -21,6 +25,7 @@ impl Default for PortfolioConfig {
         Self {
             initial_bankroll:      10_000.0,
             max_position_fraction: 0.05,
+            position_ttl_secs:     3_600, // 1 hour
         }
     }
 }
@@ -42,5 +47,10 @@ impl PortfolioConfig {
             ));
         }
         Ok(())
+    }
+
+    /// Returns `true` if TTL expiry is enabled.
+    pub fn ttl_enabled(&self) -> bool {
+        self.position_ttl_secs > 0
     }
 }

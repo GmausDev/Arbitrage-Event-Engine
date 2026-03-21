@@ -35,6 +35,7 @@ portfolio_optimizer      = { path = "../crates/portfolio_optimizer" }
 portfolio_engine         = { path = "../crates/portfolio_engine" }
 performance_analytics    = { path = "../crates/performance_analytics" }
 signal_priority_engine   = { path = "../crates/signal_priority_engine" }
+calibration              = { path = "../crates/calibration" }
 control-panel            = { path = "../control-panel" }
 
 # Runtime & utilities

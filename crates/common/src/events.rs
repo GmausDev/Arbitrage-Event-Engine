@@ -119,6 +119,10 @@ pub struct ApprovedTrade {
     pub expected_value: f64,
     pub posterior_prob: f64,
     pub market_prob: f64,
+    /// Originating strategy agent name (e.g. "signal_agent", "graph_arb_agent").
+    /// Propagated from `TradeSignal::source` for performance attribution tracking.
+    #[serde(default)]
+    pub signal_source: String,
     /// When the originating `TradeSignal` was emitted by the strategy agent.
     /// Used by `execution_sim` to compute end-to-end execution latency.
     pub signal_timestamp: Timestamp,
@@ -466,6 +470,14 @@ pub struct MarketSnapshot {
     pub volume: f64,
     /// Available liquidity (notional units).
     pub liquidity: f64,
+    /// When this market is scheduled to resolve, if known.
+    /// Used by signal_agent to apply a holding-period discount to position size.
+    #[serde(default)]
+    pub resolution_date: Option<Timestamp>,
+    /// The platform this market was fetched from, e.g. `"polymarket"` or `"kalshi"`.
+    /// Set by the data_ingestion layer; empty string when unknown.
+    #[serde(default)]
+    pub source_platform: String,
     pub timestamp: Timestamp,
 }
 
@@ -531,6 +543,25 @@ pub struct CalendarEvent {
     pub category: String,
     /// Expected market-moving impact in [0, 1] (higher = more impactful).
     pub expected_impact: f64,
+}
+
+/// Emitted by the calibration engine when a market resolves and a prediction
+/// can be scored.  Consumed by bayesian_engine to adjust market precision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationUpdate {
+    /// Market that just resolved.
+    pub market_id: String,
+    /// The posterior probability the model held at signal time [0, 1].
+    pub predicted_prob: f64,
+    /// Actual outcome: 1.0 (YES resolved) or 0.0 (NO resolved).
+    pub outcome: f64,
+    /// Brier score for this prediction: `(predicted − outcome)²`.
+    pub brier_score: f64,
+    /// Rolling mean Brier score across all scored predictions so far.
+    pub overall_brier: f64,
+    /// Expected Calibration Error across all calibration buckets [0, 1].
+    pub calibration_error: f64,
+    pub timestamp: Timestamp,
 }
 
 // ---------------------------------------------------------------------------
@@ -602,4 +633,9 @@ pub enum Event {
     TradeRejected(TradeRejected),
     /// Per-fill latency and edge-decay report.
     EdgeDecayReport(EdgeDecayReport),
+
+    // ---- calibration ----
+    /// Emitted by the calibration engine when a market resolves and a Brier
+    /// score can be computed against the model's prior prediction.
+    CalibrationUpdate(CalibrationUpdate),
 }

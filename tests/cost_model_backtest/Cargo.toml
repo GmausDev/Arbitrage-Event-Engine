@@ -1,0 +1,14 @@
+[package]
+name    = "cost_model_backtest"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cost_model_backtest"
+path = "src/main.rs"
+
+[dependencies]
+cost_model = { workspace = true }
+rand       = "0.8"
+rand_distr = "0.4"
+rayon      = "1"

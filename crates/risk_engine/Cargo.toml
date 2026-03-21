@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 common     = { workspace = true }
+cost_model = { workspace = true }
 tokio      = { workspace = true }
 tokio-util = { workspace = true }
 thiserror  = { workspace = true }

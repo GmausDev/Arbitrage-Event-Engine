@@ -28,6 +28,8 @@ fn test_config() -> SignalAgentConfig {
         min_confidence: 0.30,
         slippage_bps: 10.0,
         fee_bps: 5.0, // trading_cost = 0.0015
+        bankroll: 10_000.0,
+        liquidity_threshold: 0.1,
     }
 }
 

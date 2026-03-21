@@ -53,6 +53,7 @@ use performance_analytics::{AnalyticsConfig, PerformanceAnalytics};
 use portfolio_engine::{PortfolioConfig, PortfolioEngine};
 use portfolio_optimizer::{AllocationConfig, PortfolioOptimizer};
 use signal_priority_engine::{PriorityConfig, SignalPriorityEngine};
+use calibration::{CalibrationConfig, CalibrationEngine};
 
 // ── Config ───────────────────────────────────────────────────────────────────
 mod app_config;
@@ -89,7 +90,7 @@ async fn main() -> Result<()> {
     // ── 4. Event Bus ────────────────────────────────────────────────────────
     // Single broadcast channel shared by all engines and agents.
     // Each component calls bus.clone() to get its own handle.
-    let bus = EventBus::new();
+    let bus = EventBus::with_capacity(config.bus_capacity);
     info!("event_bus: initialised");
 
     // ── 5. Engines ──────────────────────────────────────────────────────────
@@ -216,6 +217,9 @@ async fn main() -> Result<()> {
         bus.clone(),
     );
 
+    // calibration — tracks posteriors vs resolved outcomes, emits CalibrationUpdate.
+    let calibration_eng = CalibrationEngine::new(CalibrationConfig::default(), bus.clone());
+
     // ── 7. Cancellation token for graceful shutdown ─────────────────────────
     let cancel = CancellationToken::new();
 
@@ -260,8 +264,9 @@ async fn main() -> Result<()> {
     let h_data_ingestion = tokio::spawn(data_ingestion.run(cancel.child_token()));
     let h_priority_eng   = tokio::spawn(priority_engine.run(cancel.child_token()));
     let h_port_opt       = tokio::spawn(port_opt.run(cancel.child_token()));
-    let h_port_eng    = tokio::spawn(port_eng.run(cancel.child_token()));
-    let h_analytics   = tokio::spawn(analytics.run(cancel.child_token()));
+    let h_port_eng       = tokio::spawn(port_eng.run(cancel.child_token()));
+    let h_analytics      = tokio::spawn(analytics.run(cancel.child_token()));
+    let h_calibration    = tokio::spawn(calibration_eng.run(cancel.child_token()));
 
     // ── 9. Await shutdown ───────────────────────────────────────────────────
     info!("prediction-agent: all tasks running — press Ctrl-C to stop");
@@ -278,7 +283,7 @@ async fn main() -> Result<()> {
         h_signal, h_shock_det, h_graph_arb, h_temporal, h_bayes_edge, h_meta_strat,
         h_rel_disc, h_strategy_res, h_data_ingestion,
         h_priority_eng, h_port_opt, h_port_eng, h_analytics,
-        h_control_panel,
+        h_calibration, h_control_panel,
     ));
 
     Ok(())

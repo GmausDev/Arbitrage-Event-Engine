@@ -7,9 +7,10 @@
 
 use std::{sync::Arc, time::Duration};
 
+use chrono::Utc;
 use common::{
-    Event, EventBus, GraphUpdate, MarketNode, MarketUpdate, NodeProbUpdate, TradeDirection,
-    TradeSignal,
+    Event, EventBus, GraphUpdate, MarketNode, MarketSnapshot, MarketUpdate, NodeProbUpdate,
+    TradeDirection, TradeSignal,
 };
 use graph_arb_agent::{GraphArbAgent, GraphArbConfig, GraphArbState};
 use tokio::sync::broadcast;
@@ -28,6 +29,7 @@ fn test_config() -> GraphArbConfig {
         confidence_scale: 0.20,
         min_market_price: 0.05,
         max_market_price: 0.95,
+        ..GraphArbConfig::default()
     }
 }
 
@@ -290,5 +292,241 @@ async fn signal_state_counters_accurate() {
     let st = state.read().await;
     assert_eq!(st.signals_emitted, 1);
     assert_eq!(st.events_processed, 2);
+    cancel.cancel();
+}
+
+// ---------------------------------------------------------------------------
+// Cross-platform arbitrage tests
+// ---------------------------------------------------------------------------
+
+/// Build a MarketSnapshot with the given platform and probability.
+fn market_snapshot(id: &str, title: &str, platform: &str, prob: f64) -> Event {
+    Event::MarketSnapshot(MarketSnapshot {
+        market_id: id.to_string(),
+        title: title.to_string(),
+        description: String::new(),
+        probability: prob,
+        bid: prob - 0.01,
+        ask: prob + 0.01,
+        volume: 10_000.0,
+        liquidity: 5_000.0,
+        resolution_date: None,
+        source_platform: platform.to_string(),
+        timestamp: Utc::now(),
+    })
+}
+
+/// Config with a low similarity threshold so test titles reliably match.
+fn xplatform_config() -> GraphArbConfig {
+    GraphArbConfig {
+        // Lower threshold so our test titles (which share many words) match.
+        xplatform_min_title_similarity: 0.20,
+        // Short cooldown so we can test re-emission without sleeping.
+        xplatform_signal_cooldown_secs: 0,
+        ..GraphArbConfig::default()
+    }
+}
+
+#[tokio::test]
+async fn xplatform_arb_emits_buy_and_sell_signals() {
+    // polymarket: 0.42, kalshi: 0.46 → spread=0.04 > min_spread=0.02
+    let bus = EventBus::new();
+    let mut verify_rx = bus.subscribe();
+    let cancel = CancellationToken::new();
+
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let state = agent.state();
+    tokio::spawn(agent.run(cancel.child_token()));
+
+    bus.publish(market_snapshot(
+        "POLY-TRUMP",
+        "Will Trump win the 2024 presidential election",
+        "polymarket",
+        0.42,
+    ))
+    .ok();
+    wait_for_events(&state, 1).await;
+
+    bus.publish(market_snapshot(
+        "KAL-TRUMP",
+        "Trump wins 2024 presidential election",
+        "kalshi",
+        0.46,
+    ))
+    .ok();
+    wait_for_events(&state, 2).await;
+
+    let signals = collect_signals(&mut verify_rx, Duration::from_millis(300)).await;
+    cancel.cancel();
+
+    // Should produce exactly two signals: BUY on cheap (polymarket) and SELL on dear (kalshi).
+    let xplatform: Vec<_> = signals
+        .iter()
+        .filter(|s| s.source == "cross_platform_arb")
+        .collect();
+
+    assert_eq!(xplatform.len(), 2, "expected BUY + SELL signals, got {}", xplatform.len());
+
+    let buy_sig = xplatform.iter().find(|s| s.direction == TradeDirection::Buy);
+    let sell_sig = xplatform.iter().find(|s| s.direction == TradeDirection::Sell);
+
+    assert!(buy_sig.is_some(), "expected a Buy signal");
+    assert!(sell_sig.is_some(), "expected a Sell signal");
+
+    let buy = buy_sig.unwrap();
+    let sell = sell_sig.unwrap();
+
+    assert_eq!(buy.market_id, "POLY-TRUMP", "buy should be on cheaper platform");
+    assert_eq!(sell.market_id, "KAL-TRUMP", "sell should be on dearer platform");
+    assert!(buy.expected_value > 0.0);
+    assert!(sell.expected_value > 0.0);
+    assert!(buy.position_fraction > 0.0 && buy.position_fraction <= 0.03 + 1e-9);
+    assert!(sell.position_fraction > 0.0 && sell.position_fraction <= 0.03 + 1e-9);
+}
+
+#[tokio::test]
+async fn xplatform_no_signal_when_spread_too_small() {
+    // polymarket: 0.50, kalshi: 0.50 → spread=0 → no signal.
+    let bus = EventBus::new();
+    let mut verify_rx = bus.subscribe();
+    let cancel = CancellationToken::new();
+
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let state = agent.state();
+    tokio::spawn(agent.run(cancel.child_token()));
+
+    bus.publish(market_snapshot(
+        "POLY-A",
+        "Will Trump win the 2024 presidential election",
+        "polymarket",
+        0.50,
+    ))
+    .ok();
+    wait_for_events(&state, 1).await;
+
+    bus.publish(market_snapshot(
+        "KAL-A",
+        "Trump wins 2024 presidential election",
+        "kalshi",
+        0.50, // identical price → spread=0
+    ))
+    .ok();
+    wait_for_events(&state, 2).await;
+
+    let signals = collect_signals(&mut verify_rx, Duration::from_millis(150)).await;
+    cancel.cancel();
+
+    let xplatform: Vec<_> = signals
+        .iter()
+        .filter(|s| s.source == "cross_platform_arb")
+        .collect();
+    assert!(xplatform.is_empty(), "no spread → no xplatform signal");
+}
+
+#[tokio::test]
+async fn xplatform_no_signal_same_platform() {
+    // Both markets on the same platform — should never form a pair.
+    let bus = EventBus::new();
+    let mut verify_rx = bus.subscribe();
+    let cancel = CancellationToken::new();
+
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let state = agent.state();
+    tokio::spawn(agent.run(cancel.child_token()));
+
+    bus.publish(market_snapshot(
+        "POLY-1",
+        "Will Trump win the 2024 presidential election",
+        "polymarket",
+        0.42,
+    ))
+    .ok();
+    wait_for_events(&state, 1).await;
+
+    bus.publish(market_snapshot(
+        "POLY-2",
+        "Trump wins 2024 presidential election",
+        "polymarket", // same platform
+        0.46,
+    ))
+    .ok();
+    wait_for_events(&state, 2).await;
+
+    let signals = collect_signals(&mut verify_rx, Duration::from_millis(150)).await;
+    cancel.cancel();
+
+    let xplatform: Vec<_> = signals
+        .iter()
+        .filter(|s| s.source == "cross_platform_arb")
+        .collect();
+    assert!(xplatform.is_empty(), "same platform must not produce xplatform signal");
+}
+
+#[tokio::test]
+async fn xplatform_no_signal_when_titles_dissimilar() {
+    // Spread is large, but titles are completely unrelated.
+    let bus = EventBus::new();
+    let mut verify_rx = bus.subscribe();
+    let cancel = CancellationToken::new();
+
+    let cfg = GraphArbConfig {
+        xplatform_min_title_similarity: 0.40, // strict threshold
+        xplatform_signal_cooldown_secs: 0,
+        ..GraphArbConfig::default()
+    };
+    let agent = GraphArbAgent::new(cfg, bus.clone());
+    let state = agent.state();
+    tokio::spawn(agent.run(cancel.child_token()));
+
+    bus.publish(market_snapshot("POLY-BTC", "Bitcoin price above 100k", "polymarket", 0.42))
+        .ok();
+    wait_for_events(&state, 1).await;
+
+    bus.publish(market_snapshot("KAL-EUR", "Euro cup soccer winner", "kalshi", 0.80))
+        .ok();
+    wait_for_events(&state, 2).await;
+
+    let signals = collect_signals(&mut verify_rx, Duration::from_millis(150)).await;
+    cancel.cancel();
+
+    let xplatform: Vec<_> = signals
+        .iter()
+        .filter(|s| s.source == "cross_platform_arb")
+        .collect();
+    assert!(xplatform.is_empty(), "dissimilar titles must not produce xplatform signal");
+}
+
+#[tokio::test]
+async fn xplatform_state_counters_track_xplatform_signals() {
+    let bus = EventBus::new();
+    let cancel = CancellationToken::new();
+
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let state = agent.state();
+    tokio::spawn(agent.run(cancel.child_token()));
+
+    bus.publish(market_snapshot(
+        "POLY-X",
+        "Will Trump win the 2024 presidential election",
+        "polymarket",
+        0.42,
+    ))
+    .ok();
+    wait_for_events(&state, 1).await;
+
+    bus.publish(market_snapshot(
+        "KAL-X",
+        "Trump wins 2024 presidential election",
+        "kalshi",
+        0.46,
+    ))
+    .ok();
+    wait_for_events(&state, 2).await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let st = state.read().await;
+    assert_eq!(st.xplatform_signals_emitted, 2, "should track 2 xplatform signals (buy + sell)");
+    assert_eq!(st.signals_emitted, 2);
     cancel.cancel();
 }
