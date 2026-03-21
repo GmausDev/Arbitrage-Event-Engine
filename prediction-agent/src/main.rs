@@ -61,6 +61,9 @@ use app_config::AppConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env before anything else so API keys are visible to all connectors.
+    let _ = dotenvy::dotenv();
+
     // ── 1. Logging ─────────────────────────────────────────────────────────
     tracing_subscriber::fmt()
         .with_env_filter(

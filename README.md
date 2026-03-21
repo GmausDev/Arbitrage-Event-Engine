@@ -1,42 +1,50 @@
 # Arbitrage Event Engine
 
-A modular, event-driven prediction market trading system written in Rust. The bot exploits pricing inefficiencies on [Polymarket](https://polymarket.com) and [Kalshi](https://kalshi.com) using Bayesian probability updates, market graph analysis, and multi-agent signal fusion — **all in simulated paper trading with no real order execution**.
+A modular, event-driven prediction market trading system written in Rust. The bot exploits pricing inefficiencies on [Polymarket](https://polymarket.com) and [Kalshi](https://kalshi.com) using Bayesian probability updates, market graph analysis, multi-agent signal fusion, and a **net-edge cost model** — **all in simulated paper trading with no real order execution**.
 
 ## Overview
 
-The system is built as a Rust workspace of 23+ specialized crates, each responsible for a single concern, communicating exclusively through a shared `EventBus` (tokio broadcast channel). A real-time web dashboard provides live visibility into signals, portfolio state, market data, and strategy research.
+The system is a **Rust workspace** of **28 packages** (engines, agents, dashboard, test harnesses). Components communicate only through a shared **`EventBus`** (tokio broadcast channel). A **Mission Control** web stack (Axum + Next.js) provides live visibility into signals, portfolio state, market data, and strategy research.
 
-### Strategy Approach
+On startup, `prediction-agent` loads **`.env`** (via `dotenvy`) so API keys are available to connectors before any tasks spawn.
 
-- Models markets as a **probability graph** — nodes are markets, edges are statistical correlations and logical dependencies
-- **Bayesian inference** fuses market price data, sentiment signals, and graph-propagated information into posterior probability estimates
-- Four **strategy agents** independently generate trade signals:
-  - `signal_agent` — Kelly-sized positions from Bayesian posteriors
-  - `graph_arb_agent` — graph-implied vs. market-price arbitrage
-  - `temporal_agent` — rolling z-score momentum from price history
+### Strategy approach
+
+- Markets are modeled as a **probability graph** — nodes are markets, edges are correlations and dependencies.
+- **Bayesian inference** fuses market prices, graph propagation, sentiment (when present), and **economic releases** (`Event::EconomicRelease`) into posterior estimates.
+- **Strategy agents** emit `Event::Signal`:
+  - `signal_agent` — Kelly-sized positions from posteriors
+  - `graph_arb_agent` — graph-implied vs. market-price arbitrage (including cross-platform logic where configured)
+  - `temporal_agent` — rolling z-score momentum
   - `bayesian_edge_agent` — posterior deviation with shock boost and graph damping
-- `meta_strategy` fuses signals across all agents with weighted direction voting
-- `strategy_research` runs automated hypothesis generation and backtesting on a 5-minute timer, promoting winning strategies
-- `risk_engine` gates all signals through exposure limits and Kelly sizing before execution
-- `execution_sim` simulates realistic order fills with slippage
+- **`signal_priority_engine`** splits signals into a **fast path** (`Event::FastSignal` → `risk_engine`) and a **slow path** (`Event::TopSignalsBatch` → `portfolio_optimizer` → `Event::OptimizedSignal` → `risk_engine`).
+- **`meta_strategy`** fuses raw agent signals into **`Event::MetaSignal`** for the **control panel** (observability); the default execution path uses the priority engine + optimizer + risk stack above.
+- **`strategy_research`** runs hypothesis generation and backtesting on a timer (default ~5 minutes), promoting strategies and emitting `Event::StrategyDiscovered`.
+- **`risk_engine`** applies exposure limits, drawdown gates, and the **`cost_model`** (fees, spread, slippage, decay) so only **positive net edge** trades pass when configured.
+- **`execution_sim`** simulates fills with slippage; **`portfolio_engine`** is the source of truth for positions and PnL.
 
-Target market niches: crypto, politics, geopolitics, macro, sports.
+Target niches (config): crypto, politics, geopolitics, macro, sports.
 
 ---
 
 ## Architecture
 
-### Event Flow
+### Production event flow (`prediction-agent`)
+
+The orchestrator **spawns** the components below. Crates such as **`world_model`** and **`scenario_engine`** exist in the workspace (types, tests) but are **not** currently wired into `prediction-agent`; their `Event::*` variants are reserved for future integration.
 
 ```
-market_scanner ──→ Event::Market
+market_scanner ──→ Event::Market (Polymarket + Kalshi, every tick)
+
+data_ingestion ──→ Event::Market / MarketSnapshot / NewsEvent / SocialTrend
+                   EconomicRelease / CalendarEvent
+                   (NewsAPI, Alpha Vantage, FRED, Reddit, Twitter, Kalshi/Polymarket
+                    ingestion connectors — requires API keys in .env where applicable)
+
                         ├─→ market_graph     ──→ Event::Graph
                         │       └─→ bayesian_engine ──→ Event::Posterior
                         ├─→ shock_detector   ──→ Event::Shock
-                        └─→ world_model      ──→ Event::WorldProbability
-                                └─→ scenario_engine ──→ Event::ScenarioSignal
-
-data_ingestion   ──→ Event::Market / MarketSnapshot / NewsEvent / SocialTrend
+                        └─→ (world_model / scenario_engine — not spawned in main binary)
 
 bayesian_engine  ──→ Event::Posterior
                         ├─→ signal_agent         ──→ Event::Signal
@@ -45,249 +53,223 @@ bayesian_engine  ──→ Event::Posterior
 graph_arb_agent / temporal_agent / bayesian_edge_agent / signal_agent
                         └─→ Event::Signal
                                 └─→ signal_priority_engine
-                                └─→ meta_strategy  ──→ Event::MetaSignal
-                                └─→ portfolio_optimizer ──→ Event::OptimizedSignal
+                                        ├─→ Event::FastSignal ──────────────→ risk_engine
+                                        └─→ Event::TopSignalsBatch
+                                                └─→ portfolio_optimizer ──→ Event::OptimizedSignal
+                                                                                └─→ risk_engine
 
-risk_engine      ──→ Event::ApprovedTrade
+meta_strategy    ──→ Event::MetaSignal  (Mission Control / analytics)
+
+risk_engine      ──→ Event::ApprovedTrade (+ Event::TradeRejected when gated)
                         └─→ execution_sim  ──→ Event::Execution
                                 └─→ portfolio_engine ──→ Event::Portfolio
-                                        └─→ performance_analytics
+                                        ├─→ performance_analytics
+                                        └─→ calibration ──→ Event::CalibrationUpdate
+
+relationship_discovery  consumes Event::Market → Event::RelationshipDiscovered
+
+simulation_engine       default LiveObserver: tracks Execution / Portfolio (no interference)
 ```
 
-`relationship_discovery` passively consumes `Event::Market` and emits `Event::RelationshipDiscovered` (auto-discovered market correlations). `data_ingestion` is the authoritative source for production data.
-
-### Workspace Layout
+### Workspace layout
 
 ```
 crates/
-  common/                # Event enum, EventBus, TradeSignal, TradeDirection, shared types
-  market_graph/          # petgraph correlation graph + BFS probability propagation
-  bayesian_engine/       # Log-odds Bayesian posterior fusion
-  world_model/           # Global probabilistic state + logical constraint enforcement
-  scenario_engine/       # Two-pass Monte Carlo joint-market sampling
-  shock_detector/        # Price/sentiment shock detection → Event::Shock
-  meta_strategy/         # Multi-agent signal fusion → Event::MetaSignal
-  strategy_research/     # Hypothesis gen, parallel backtesting, strategy registry
-  risk_engine/           # Exposure gates, Kelly position sizing
-  portfolio_optimizer/   # Batch signal allocation + correlation penalty
-  execution_sim/         # Simulated fills with slippage model
-  portfolio_engine/      # Authoritative position and PnL tracking
-  performance_analytics/ # Sharpe, drawdown, MTM PnL metrics
-  simulation_engine/     # Monte Carlo backtesting (placeholder)
-  relationship_discovery/# Pearson correlation, mutual information, TF-IDF similarity
-  data_ingestion/        # Polymarket/Kalshi/NewsAPI/Reddit/FRED connectors
-  signal_priority_engine/# Fast (direct) vs. slow (batched) signal routing
+  common/                 # Event enum, EventBus, TradeSignal, shared wire types
+  market_graph/           # petgraph + BFS probability propagation
+  bayesian_engine/        # Log-odds posterior fusion (+ EconomicRelease path)
+  world_model/            # Global state + constraints (library; not in main binary)
+  scenario_engine/        # Monte Carlo scenarios (library; not in main binary)
+  shock_detector/         # Shocks → Event::Shock
+  meta_strategy/          # Multi-agent fusion → Event::MetaSignal
+  strategy_research/      # Hypothesis gen, backtests, strategy registry
+  risk_engine/            # Exposure + drawdown + cost_model net-edge gates
+  cost_model/             # Fee/spread/slippage/decay estimates (used by risk_engine)
+  portfolio_optimizer/    # Batch allocation + correlation penalty (+ priority-engine mode)
+  signal_priority_engine/ # Fast vs slow signal routing
+  execution_sim/          # Simulated fills
+  portfolio_engine/       # Positions + PnL
+  performance_analytics/  # Sharpe, drawdown, MTM; Prometheus gauges
+  calibration/            # Resolved-market calibration → Event::CalibrationUpdate
+  simulation_engine/      # Live observer, historical replay, Monte Carlo helpers
+  relationship_discovery/ # Correlation / relationship discovery
+  data_ingestion/         # External APIs, normalizers, snapshot cache, matcher
+  ...                     # (see Cargo.toml for full member list)
 
 agents/
-  market_scanner/        # Polls Polymarket + Kalshi REST APIs every tick
-  signal_agent/          # EV + Kelly sizing from posteriors → Event::Signal
-  graph_arb_agent/       # Graph-implied vs. market-price arbitrage
-  temporal_agent/        # Rolling momentum z-score signals
-  bayesian_edge_agent/   # Posterior deviation + shock boost + graph damping
+  market_scanner/         # Polymarket + Kalshi REST polling
+  signal_agent/
+  graph_arb_agent/
+  temporal_agent/
+  bayesian_edge_agent/
 
-control-panel/           # Axum REST + WebSocket backend (port 3001)
-control-panel-ui/        # Next.js/React dashboard frontend (port 3000)
-prediction-agent/        # Binary orchestrator — wires everything, spawns all tasks
+control-panel/            # Axum REST + WebSocket (default :3001)
+control-panel-ui/         # Next.js dashboard (dev :3000)
+prediction-agent/         # Binary orchestrator
+
 tests/
-  integration_harness/   # Synthetic 3-market end-to-end pipeline test
+  integration_harness/    # Synthetic end-to-end pipeline
+  cost_model_backtest/    # Before/after cost gating Monte Carlo comparison (`cargo run -p cost_model_backtest`)
 ```
 
 ---
 
-## Mission Control Dashboard
+## Mission Control dashboard
 
-A live web dashboard with 7 pages:
+Live web UI with multiple pages (overview, markets, signals, portfolio, strategy research, risk controls, execution). Backend streams **`WsEvent`** JSON on **`/ws/stream`**.
 
 | Page | Description |
 |------|-------------|
-| **System Overview** | Uptime, event throughput, agent status, market count |
-| **Market Intelligence** | Live market probabilities, bid/ask, liquidity, update rate |
-| **Signal Monitor** | Real-time signal feed with edge, confidence, direction |
-| **Portfolio** | Equity curve, PnL (realized/unrealized), drawdown, Sharpe, open positions |
-| **Strategy Research** | Promoted strategy registry with backtest metrics |
-| **Risk Control** | Live parameter sliders (edge threshold, Kelly fraction, position limits) with zero-restart updates |
-| **Execution Monitor** | Fill history, slippage distribution, fill ratios |
+| **System Overview** | Uptime, throughput, agent status, market counts |
+| **Market Intelligence** | Live probabilities, liquidity, update rates |
+| **Signal Monitor** | Signal feed: edge, confidence, direction |
+| **Portfolio** | Equity, PnL, drawdown, Sharpe, positions |
+| **Strategy Research** | Promoted strategies and backtest metrics |
+| **Risk Control** | Runtime parameter updates (where implemented) |
+| **Execution Monitor** | Fills, slippage, fill ratios |
 
-The backend streams `WsEvent` JSON over WebSocket (`/ws/stream`). Metrics also expose over Prometheus on `:9000/metrics`.
+**Frontend:** `http://localhost:3000` (after `npm run dev` in `control-panel-ui`).  
+**Backend:** `http://0.0.0.0:3001` (started automatically with `prediction-agent`).
 
-### Metrics Alignment
+Set `NEXT_PUBLIC_WS_URL=ws://localhost:3001/ws/stream` in `control-panel-ui/.env.local` for WebSocket in dev (Next rewrites do not upgrade WS).
 
-Dashboard metrics are computed to match `performance_analytics` exactly:
-- **Sharpe**: absolute PnL changes per tick, sample variance (n−1), annualisation factor `√(31,557,600 / 60) ≈ 725`
-- **Drawdown**: lifetime global high-water mark (never decreases within a session)
-- **PnL split**: MTM unrealized computed from position entry price vs. current market price
+### Metrics (`:9000/metrics`)
+
+Prometheus scrape endpoint (started with the binary). Includes pipeline counters (scanner, graph, Bayesian, priority engine, strategy research, etc.) and **portfolio gauges** after `Event::Portfolio` updates (e.g. `portfolio_total_pnl`, `portfolio_sharpe_ratio`, `portfolio_max_drawdown`, `portfolio_equity`). Counters/gauges are **in-memory** and reset on process restart.
+
+### Metrics alignment (analytics)
+
+`performance_analytics` default **`tick_interval_secs`** is **60** (one-minute snapshot cadence for Sharpe annualisation), so the annualisation factor is **`√(31,557,600 / 60) ≈ 725`**, matching the dashboard narrative when both use the same tick assumption.
 
 ---
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- **Rust** (stable, 2021 edition) — [install via rustup](https://rustup.rs)
-- **Node.js** 18+ and npm — for the dashboard frontend
+- **Rust** (stable, 2021 edition) — [rustup](https://rustup.rs)
+- **Node.js** 18+ and **npm** — for the dashboard frontend
 
 ### Build
 
 ```bash
-# Check the full workspace
 cargo check --workspace
-
-# Build (debug)
 cargo build --workspace
-
-# Build (release)
 cargo build --workspace --release
 ```
 
 ### Run
 
 ```bash
-# Start the bot (includes control panel backend on :3001 and Prometheus on :9000)
+# Full stack: all engines/agents + control panel :3001 + Prometheus :9000
 cargo run --bin prediction-agent
 
-# With debug logging
 RUST_LOG=debug cargo run --bin prediction-agent
 
-# Run the end-to-end integration test (no external APIs required)
+# Synthetic integration test (no external APIs)
 cargo run --bin integration_harness
+
+# Cost-model before/after backtest (standalone binary)
+cargo run -p cost_model_backtest
 ```
 
 ### Dashboard
 
 ```bash
 cd control-panel-ui
-
-# Install dependencies (first time only)
 npm install
-
-# Development server with hot reload (proxies /api/* to :3001)
-npm run dev        # http://localhost:3000
-
-# Production build
-npm run build && npm start
+npm run dev    # http://localhost:3000
 ```
-
-**WebSocket connection**: The frontend connects directly to the Rust backend WebSocket. Set `NEXT_PUBLIC_WS_URL=ws://localhost:3001/ws/stream` in `control-panel-ui/.env.local` (required in dev mode because Next.js rewrites don't upgrade WebSocket connections).
 
 ### Configuration
 
-The bot loads configuration from `config/default.toml` (checked in) and `config/local.toml` (gitignored, for overrides). All values can also be set via `PRED_AGENT_*` environment variables.
+| Source | Purpose |
+|--------|---------|
+| `config/default.toml` | Committed defaults (`arb_threshold`, `tick_interval_ms`, `paper_bankroll`, `bus_capacity`, `[scanner]`, `[graph]`, …) |
+| `config/local.toml` | Gitignored overrides |
+| `PRED_AGENT_*` env vars | Override TOML (e.g. `PRED_AGENT_PAPER_BANKROLL`) |
+| **`.env`** | **API keys** (gitignored). Loaded at startup by `prediction-agent`. |
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `arb_threshold` | `0.05` | Minimum model vs. market probability gap to generate a signal |
-| `tick_interval_ms` | `1000` | Market polling interval in milliseconds |
-| `paper_bankroll` | `10000.0` | Simulated starting capital in USD |
-| `bus_capacity` | `1024` | EventBus broadcast channel buffer size |
-| `target_niches` | `["crypto", "politics", "geopolitics", "macro", "sports"]` | Market categories to scan |
+| `arb_threshold` | `0.05` | Minimum model vs. market gap for risk / signal context |
+| `tick_interval_ms` | `1000` | Market scanner poll interval |
+| `paper_bankroll` | `10000` | Simulated USD capital (portfolio, execution, risk, optimizer, analytics) |
+| `bus_capacity` | `1024` | EventBus channel capacity |
 
-Live parameters (edge threshold, Kelly fraction, position limits, agent enable/disable) can be updated at runtime through the Risk Control page — no restart required.
+**Optional `.env` variables** (used by `data_ingestion` connectors when set):
+
+| Variable | Used for |
+|----------|----------|
+| `NEWS_API_KEY` | NewsAPI.org |
+| `ALPHA_VANTAGE_KEY` | Alpha Vantage news/sentiment |
+| `FRED_API_KEY` | St. Louis Fed economic series |
+| `TRADING_ECONOMICS_KEY` | Trading Economics (if enabled) |
+| `TWITTER_BEARER_TOKEN` | X/Twitter API (if enabled) |
+
+If a key is missing, the corresponding connector typically **skips** that source (warns in logs) rather than failing the whole process.
 
 ---
 
 ## Testing
 
 ```bash
-# Run all tests
 cargo test --workspace
-
-# Single crate
 cargo test -p bayesian_engine
-
-# Single test with output
 cargo test -p meta_strategy test_signal_fusion -- --nocapture
-
-# End-to-end integration (synthetic data, no external APIs)
 cargo run --bin integration_harness
-RUST_LOG=debug cargo run --bin integration_harness
 ```
 
-### Test Coverage by Crate
+Integration tests use a real `EventBus`; subscribers are registered **before** spawning producers to avoid races.
 
-| Crate | Tests |
-|-------|-------|
-| `world_model` | 18 |
-| `scenario_engine` | 26 |
-| `meta_strategy` | 25 |
-| `strategy_research` | 30+ |
-| `bayesian_edge_agent` | 16 |
-| `graph_arb_agent` | 13 |
-| `temporal_agent` | 12 |
+### Test coverage (representative)
 
-Integration tests use a real `EventBus`; subscribers are created **before** spawning engines to eliminate subscribe-after-spawn races.
+| Area | Crate(s) |
+|------|----------|
+| World / scenario | `world_model`, `scenario_engine` |
+| Meta / research | `meta_strategy`, `strategy_research` |
+| Agents | `graph_arb_agent`, `temporal_agent`, `bayesian_edge_agent`, `signal_agent` |
+| Data path | `data_ingestion`, `risk_engine`, `portfolio_engine`, … |
 
 ---
 
-## Technology Stack
+## Technology stack
 
-**Backend (Rust)**
+**Rust:** `tokio`, `axum 0.7`, `petgraph`, `serde`/`serde_json`, `reqwest`, `tokio-tungstenite`, `tracing`, `metrics` + `metrics-exporter-prometheus`, `chrono`, `ndarray`, `tokio-util`, `dotenvy`, `futures`, `async-trait`.
 
-| Crate | Purpose |
-|-------|---------|
-| `tokio` | Async runtime |
-| `axum 0.7` | HTTP server with WebSocket support |
-| `petgraph` | Market correlation graph |
-| `serde` / `serde_json` | Serialisation |
-| `reqwest` | HTTP client for API polling |
-| `tokio-tungstenite` | WebSocket client for exchange streaming |
-| `tracing` | Structured logging |
-| `metrics` + `metrics-exporter-prometheus` | Prometheus metrics |
-| `chrono` | Timestamps |
-| `ndarray` | Numerical arrays for analytics |
-| `tokio-util` | `CancellationToken` for graceful shutdown |
-
-**Frontend (TypeScript)**
-
-| Package | Purpose |
-|---------|---------|
-| `Next.js 14` | React framework |
-| `Recharts` | Equity curve and chart components |
-| `SWR` | REST polling with revalidation |
-| `Tailwind CSS` | Utility-first styling |
-| `lucide-react` | Icons |
+**Frontend:** Next.js 14, Recharts, SWR, Tailwind CSS, lucide-react.
 
 ---
 
-## Architecture Patterns
+## Architecture patterns
 
-Every engine/agent follows the same structure:
+1. **`config.rs`** — typed config + `Default` + `validate()`
+2. **`new(config, bus)`** — validate at construction
+3. **`run(self, cancel: CancellationToken)`** — async loop with `tokio::select!` where applicable
+4. **Pure core** — mutate `&mut State` without holding locks across `.await`
+5. **Tests** — real `EventBus`; subscribe before spawn
 
-1. **`config.rs`** — typed config struct with `Default` + `validate() -> Result<(), String>`
-2. **`new(config, bus) -> Self`** — validates config at construction, panics on invalid input
-3. **`run(self, cancel: CancellationToken)`** — async event loop with `biased` `tokio::select!`
-4. **Pure core functions** — take `&mut State`, no locks, no async; called from the event loop
-5. **Integration tests** — use a real `EventBus`; subscribe `verify_rx` before spawning
-
-**Lock discipline**: Acquire write lock → mutate state → snapshot result → drop lock — all in one scope. Never hold a lock across `.await`.
-
-**Shared state**: `pub type SharedFoo = Arc<RwLock<FooState>>` — field is `pub` on the engine so tests can pre-seed or inspect state.
+**Lock discipline:** write lock → mutate → snapshot → drop lock before I/O.
 
 ---
 
-## Implementation Status
+## Implementation status
 
 | Component | Status |
 |-----------|--------|
-| `common`, `market_graph`, `bayesian_engine` | Complete |
-| `risk_engine`, `portfolio_optimizer` | Complete |
-| `portfolio_engine`, `performance_analytics` | Complete |
-| `world_model` | Complete (18 tests) |
-| `scenario_engine` | Complete (26 tests) |
-| `shock_detector` | Complete |
-| `graph_arb_agent` | Complete (13 tests) |
-| `temporal_agent` | Complete (12 tests) |
-| `bayesian_edge_agent` | Complete (16 tests) |
-| `meta_strategy` | Complete (25 tests) |
-| `strategy_research` | Complete (30+ tests) |
-| `execution_sim` | Complete |
-| `relationship_discovery` | Complete |
-| `data_ingestion` | Complete |
-| `signal_priority_engine` | Complete |
-| `control-panel` + `control-panel-ui` | Complete (7 dashboard pages) |
-| `simulation_engine` | Placeholder — `run_monte_carlo()` returns zeroed results |
+| `common`, `market_graph`, `bayesian_engine` | Active in `prediction-agent` |
+| `data_ingestion` | Active; requires keys in `.env` for full external coverage |
+| `signal_priority_engine`, `portfolio_optimizer`, `risk_engine`, `cost_model` | Active; risk uses **net-edge** gating via `cost_model` |
+| `execution_sim`, `portfolio_engine`, `performance_analytics` | Active |
+| `calibration` | Active |
+| `shock_detector`, strategy agents, `meta_strategy`, `strategy_research`, `relationship_discovery` | Active |
+| `simulation_engine` | Default **LiveObserver**; **Monte Carlo** / **HistoricalReplay** / helpers available via config — not a single “zeroed stub” anymore |
+| `world_model`, `scenario_engine` | **Crates complete; not spawned** by `prediction-agent` today |
+| `control-panel` + `control-panel-ui` | Active |
+| `tests/cost_model_backtest` | Standalone Monte Carlo comparison for cost gating |
 
 ---
 
 ## Disclaimer
 
-This project is a research and simulation tool. It does **not** execute real trades. All order flow goes through `execution_sim`, which models fills with a slippage model but sends nothing to any exchange. Use of this software for real trading requires adding a real execution layer and complying with all applicable exchange terms of service and regulations.
+This project is for **research and simulation**. It does **not** execute real trades. All orders are simulated in `execution_sim`. Real trading would require a compliant execution layer and adherence to exchange terms and regulations.

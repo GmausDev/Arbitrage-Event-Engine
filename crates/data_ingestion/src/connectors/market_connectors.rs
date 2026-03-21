@@ -191,19 +191,25 @@ struct KalshiMarketsResponse {
     cursor: String,
 }
 
+/// elections.kalshi.com v2 API returns prices as quoted-decimal strings ("0.4200"),
+/// not integer cents.  Fields mirror the market_scanner KalshiMarket struct.
 #[derive(Deserialize)]
 struct KalshiMarket {
     ticker: String,
     #[serde(default)]
     status: String,
+    /// YES bid as decimal string e.g. "0.4200".
     #[serde(default)]
-    yes_bid: u32,
+    yes_bid_dollars: Option<String>,
+    /// YES ask as decimal string e.g. "0.4400".
     #[serde(default)]
-    yes_ask: u32,
+    yes_ask_dollars: Option<String>,
+    /// Last trade price as decimal string.
     #[serde(default)]
-    last_price: u32,
+    yes_last_price: Option<String>,
+    /// Cumulative volume string.
     #[serde(default)]
-    volume: u64,
+    volume_fp: Option<String>,
     #[serde(default)]
     subtitle: Option<String>,
     #[serde(default)]
@@ -241,7 +247,9 @@ impl MarketConnector for KalshiIngestionConnector {
     }
 
     async fn fetch_markets(&self) -> Result<Vec<RawMarket>> {
-        let url = "https://trading-api.kalshi.com/trade-api/v2/markets?status=open&limit=100";
+        // elections.kalshi.com is the publicly accessible endpoint (no auth required).
+        // trading-api.kalshi.com requires OAuth and returns 401 without credentials.
+        let url = "https://api.elections.kalshi.com/trade-api/v2/markets?limit=100";
 
         let resp = match self.client.get(url).send().await {
             Ok(r) => r,
@@ -272,29 +280,40 @@ impl MarketConnector for KalshiIngestionConnector {
 
         let mut markets = vec![];
         for m in raw.markets {
-            if m.status != "open" {
+            // Elections API uses "active"; trading API uses "open". Accept both.
+            if m.status != "open" && m.status != "active" {
                 continue;
             }
 
-            let probability = m.last_price as f64 / 100.0;
+            // Parse decimal-string prices from elections API.
+            let yes_bid: f64 = m.yes_bid_dollars.as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let yes_ask: f64 = m.yes_ask_dollars.as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let last_price: f64 = m.yes_last_price.as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+
+            // Use mid of bid/ask when available, otherwise last_price.
+            let probability = if yes_bid > 0.0 || yes_ask > 0.0 {
+                ((yes_bid + yes_ask) / 2.0).clamp(0.0, 1.0)
+            } else {
+                last_price.clamp(0.0, 1.0)
+            };
             if probability <= 0.01 || probability >= 0.99 {
                 continue;
             }
 
-            // When yes_bid/yes_ask are both zero (no active order book), synthesise
-            // spread from the last_price so downstream never sees a 0/0 spread.
-            let bid = if m.yes_bid == 0 && m.yes_ask == 0 {
-                (probability - 0.01).max(0.01)
-            } else {
-                m.yes_bid as f64 / 100.0
-            };
-            let ask = if m.yes_bid == 0 && m.yes_ask == 0 {
-                (probability + 0.01).min(0.99)
-            } else {
-                m.yes_ask as f64 / 100.0
-            };
+            let bid = if yes_bid > 0.0 { yes_bid } else { (probability - 0.01).max(0.01) };
+            let ask = if yes_ask > 0.0 { yes_ask } else { (probability + 0.01).min(0.99) };
+
             let title = m.subtitle.clone().unwrap_or_else(|| m.ticker.clone());
             let description = m.rules_primary.unwrap_or_default();
+            let volume = m.volume_fp.as_deref()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
 
             markets.push(RawMarket {
                 market_id: m.ticker,
@@ -303,7 +322,7 @@ impl MarketConnector for KalshiIngestionConnector {
                 probability,
                 bid,
                 ask,
-                volume: m.volume as f64,
+                volume,
                 liquidity: 0.0,
             });
         }

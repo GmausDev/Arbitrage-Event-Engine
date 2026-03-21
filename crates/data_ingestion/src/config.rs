@@ -84,8 +84,8 @@ impl Default for IngestionConfig {
                 ..ConnectorConfig::default()
             },
             social: ConnectorConfig {
-                poll_interval_ms: 10_000,
-                rate_limit_rps: 2.0,
+                poll_interval_ms: 60_000, // Reddit public API rate-limits aggressive pollers
+                rate_limit_rps: 0.5,
                 ..ConnectorConfig::default()
             },
             economic: ConnectorConfig {

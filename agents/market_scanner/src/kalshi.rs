@@ -16,6 +16,7 @@ use common::MarketNode;
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use crate::source::MarketDataSource;
@@ -156,6 +157,11 @@ impl MarketDataSource for KalshiClient {
                 break;
             }
             pages += 1;
+
+            // Brief pause between pages to stay within Kalshi's rate limit.
+            if pages > 1 {
+                sleep(Duration::from_millis(200)).await;
+            }
 
             let (nodes, next) = self.fetch_page(cursor.as_deref()).await?;
             debug!(

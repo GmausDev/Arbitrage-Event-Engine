@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use common::MarketNode;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -24,6 +24,49 @@ use crate::source::MarketDataSource;
 /// 50 pages × 100 markets/page = 5 000 markets maximum.
 const MAX_PAGES: usize = 50;
 const PAGE_SIZE: usize = 100;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Deserialize a field that the Polymarket Gamma API returns as either a proper
+/// JSON array (`["Yes","No"]`) or a JSON-encoded string (`"[\"Yes\",\"No\"]"`).
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error as DeError;
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::Array(arr) => arr
+            .into_iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => Ok(s),
+                other => Ok(other.to_string()),
+            })
+            .collect(),
+        serde_json::Value::String(s) => {
+            serde_json::from_str(&s).map_err(DeError::custom)
+        }
+        serde_json::Value::Null => Ok(vec![]),
+        other => Err(DeError::custom(format!(
+            "expected array or string, got: {other}"
+        ))),
+    }
+}
+
+/// Deserialize a field that can be either a JSON number or a quoted numeric
+/// string (e.g. `"165855.20"`).  Returns `None` for null or unparseable values.
+fn deserialize_string_or_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::Number(n) => Ok(n.as_f64()),
+        serde_json::Value::String(s) => Ok(s.parse::<f64>().ok()),
+        serde_json::Value::Null => Ok(None),
+        _ => Ok(None),
+    }
+}
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
 
@@ -45,7 +88,8 @@ struct PolymarketMarket {
     #[serde(rename = "bestAsk")]
     best_ask: Option<f64>,
 
-    /// 24-hour trading volume in USD.
+    /// 24-hour trading volume in USD (may be a quoted string in the API response).
+    #[serde(default, deserialize_with = "deserialize_string_or_f64")]
     volume: Option<f64>,
 
     /// Market is currently active (open for trading).
@@ -57,12 +101,12 @@ struct PolymarketMarket {
     closed: bool,
 
     /// Outcome token prices; first token is typically YES.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     #[allow(dead_code)]
     outcomes: Vec<String>,
 
     /// Outcome token prices as strings (parallel array to `outcomes`).
-    #[serde(rename = "outcomePrices", default)]
+    #[serde(rename = "outcomePrices", default, deserialize_with = "deserialize_string_or_vec")]
     outcome_prices: Vec<String>,
 }
 

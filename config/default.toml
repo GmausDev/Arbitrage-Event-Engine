@@ -30,11 +30,13 @@ batch_size          = 500
 # Data sources to enable.  Remove an entry to disable that exchange.
 enabled_sources     = ["polymarket", "kalshi"]
 
-# Polymarket CLOB REST API base URL (no trailing slash).
-polymarket_base_url = "https://clob.polymarket.com"
+# Polymarket Gamma REST API base URL (no trailing slash).
+# Note: AppConfig does not load this [scanner] section; ScannerConfig uses its
+# own Rust defaults. Values here are for documentation / future wiring.
+polymarket_base_url = "https://gamma-api.polymarket.com"
 
-# Kalshi v2 REST API base URL (no trailing slash).
-kalshi_base_url     = "https://trading-api.kalshi.com/trade-api/v2"
+# Kalshi v2 Elections REST API base URL (public, no auth required).
+kalshi_base_url     = "https://api.elections.kalshi.com/trade-api/v2"
 
 # Per-request HTTP timeout in milliseconds.
 request_timeout_ms  = 5000
