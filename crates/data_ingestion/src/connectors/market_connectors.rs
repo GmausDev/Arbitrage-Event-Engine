@@ -74,7 +74,10 @@ impl PolymarketIngestionConnector {
 
 impl Default for PolymarketIngestionConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build PolymarketIngestionConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "PolymarketIngestionConnector: failed to build HTTP client, using no-op fallback");
+            Self { client: reqwest::Client::new() }
+        })
     }
 }
 
@@ -140,15 +143,23 @@ impl MarketConnector for PolymarketIngestionConnector {
             let bid = (yes_price - 0.01).max(0.01);
             let ask = (yes_price + 0.01).min(0.99);
 
+            // Reject NaN/Inf values that could poison downstream calculations.
+            if !yes_price.is_finite() {
+                tracing::warn!(market = %m.id, "polymarket: non-finite price, skipping");
+                continue;
+            }
+
             let volume = m
                 .volume
                 .as_deref()
                 .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
                 .unwrap_or(0.0);
             let liquidity = m
                 .liquidity
                 .as_deref()
                 .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
                 .unwrap_or(0.0);
 
             markets.push(RawMarket {
@@ -236,7 +247,10 @@ impl KalshiIngestionConnector {
 
 impl Default for KalshiIngestionConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build KalshiIngestionConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "KalshiIngestionConnector: failed to build HTTP client, using no-op fallback");
+            Self { client: reqwest::Client::new() }
+        })
     }
 }
 
@@ -295,6 +309,12 @@ impl MarketConnector for KalshiIngestionConnector {
             let last_price: f64 = m.yes_last_price.as_deref()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
+
+            // Reject NaN/Inf values that could poison downstream calculations.
+            if !yes_bid.is_finite() || !yes_ask.is_finite() || !last_price.is_finite() {
+                tracing::warn!(market = %m.ticker, "kalshi: non-finite price, skipping");
+                continue;
+            }
 
             // Use mid of bid/ask when available, otherwise last_price.
             let probability = if yes_bid > 0.0 || yes_ask > 0.0 {

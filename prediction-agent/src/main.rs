@@ -88,7 +88,48 @@ async fn main() -> Result<()> {
         tracing::warn!("config load failed ({e}), using defaults");
         AppConfig::default()
     });
-    info!(?config, "prediction-agent: loaded configuration");
+    // Log only non-sensitive config fields to avoid leaking trading parameters.
+    info!(
+        niches     = ?config.target_niches,
+        bankroll   = config.paper_bankroll,
+        tick_ms    = config.tick_interval_ms,
+        bus_cap    = config.bus_capacity,
+        "prediction-agent: loaded configuration"
+    );
+
+    // ── Startup: warn about missing API keys ────────────────────────────
+    // Fail-fast is too aggressive for a paper-trading system with optional
+    // data sources, but operators must see exactly what is missing.
+    {
+        let optional_keys = [
+            ("NEWS_API_KEY",           "NewsAPI headlines"),
+            ("ALPHA_VANTAGE_KEY",      "AlphaVantage news sentiment"),
+            ("FRED_API_KEY",           "FRED economic indicators"),
+            ("TRADING_ECONOMICS_KEY",  "TradingEconomics calendar"),
+            ("TWITTER_BEARER_TOKEN",   "Twitter/X social sentiment"),
+        ];
+        let mut missing = Vec::new();
+        for (var, label) in &optional_keys {
+            if std::env::var(var).is_err() {
+                missing.push(*label);
+            }
+        }
+        if !missing.is_empty() {
+            tracing::warn!(
+                missing = ?missing,
+                "prediction-agent: {} data-source API key(s) not set — those connectors will be skipped",
+                missing.len(),
+            );
+        }
+
+        // Security keys — warn more prominently
+        if std::env::var("CONTROL_PANEL_API_KEY").is_err() {
+            tracing::warn!("CONTROL_PANEL_API_KEY not set — Mission Control dashboard has NO authentication");
+        }
+        if std::env::var("CONTROL_PANEL_CORS_ORIGIN").is_err() {
+            tracing::warn!("CONTROL_PANEL_CORS_ORIGIN not set — CORS is permissive (accepts any origin)");
+        }
+    }
 
     // ── 4. Event Bus ────────────────────────────────────────────────────────
     // Single broadcast channel shared by all engines and agents.

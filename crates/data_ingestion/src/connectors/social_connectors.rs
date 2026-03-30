@@ -77,7 +77,11 @@ impl RedditConnector {
 
 impl Default for RedditConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build RedditConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "RedditConnector: failed to build HTTP client, using no-op fallback");
+            let headers = reqwest::header::HeaderMap::new();
+            Self { client: reqwest::ClientBuilder::new().default_headers(headers).build().unwrap_or_default() }
+        })
     }
 }
 
@@ -212,7 +216,10 @@ impl TwitterConnector {
 
 impl Default for TwitterConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build TwitterConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "TwitterConnector: failed to build HTTP client, using no-op fallback");
+            Self { client: reqwest::Client::new() }
+        })
     }
 }
 

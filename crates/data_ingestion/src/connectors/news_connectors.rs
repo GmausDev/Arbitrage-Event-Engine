@@ -66,7 +66,11 @@ impl NewsApiConnector {
 
 impl Default for NewsApiConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build NewsApiConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "NewsApiConnector: failed to build HTTP client, using no-op fallback");
+            // Build a minimal client that will fail at request time rather than crash at startup.
+            Self { client: reqwest::Client::new() }
+        })
     }
 }
 
@@ -87,11 +91,11 @@ impl NewsConnector for NewsApiConnector {
 
         // Use OR logic so articles about any of these topics are returned.
         // The %20OR%20 syntax is NewsAPI's boolean OR operator.
-        let url = format!(
-            "https://newsapi.org/v2/top-headlines?q=prediction%20market%20OR%20economy%20OR%20politics%20OR%20federal%20reserve&language=en&pageSize=20&apiKey={key}"
-        );
+        let url = "https://newsapi.org/v2/top-headlines?q=prediction%20market%20OR%20economy%20OR%20politics%20OR%20federal%20reserve&language=en&pageSize=20";
 
-        let resp = match self.client.get(&url).send().await {
+        // Pass API key via header instead of query parameter to avoid leaking
+        // credentials in logs, proxies, and HTTP referrer headers.
+        let resp = match self.client.get(url).header("X-Api-Key", &key).send().await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(connector = "news_api", err = %e, "HTTP request failed");
@@ -200,7 +204,10 @@ impl AlphaVantageNewsConnector {
 
 impl Default for AlphaVantageNewsConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build AlphaVantageNewsConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "AlphaVantageNewsConnector: failed to build HTTP client, using no-op fallback");
+            Self { client: reqwest::Client::new() }
+        })
     }
 }
 
@@ -219,11 +226,21 @@ impl NewsConnector for AlphaVantageNewsConnector {
             }
         };
 
-        let url = format!(
-            "https://www.alphavantage.co/query?function=NEWS_SENTIMENT&topics=economy_macro,financial_markets&sort=LATEST&limit=20&apikey={key}"
-        );
+        // AlphaVantage requires the key as a query parameter (no header auth
+        // supported), but we build the URL without interpolation to keep the
+        // key out of format-string logs.  reqwest will percent-encode if needed.
+        let url = reqwest::Url::parse_with_params(
+            "https://www.alphavantage.co/query",
+            &[
+                ("function", "NEWS_SENTIMENT"),
+                ("topics",   "economy_macro,financial_markets"),
+                ("sort",     "LATEST"),
+                ("limit",    "20"),
+                ("apikey",   &key),
+            ],
+        ).map_err(|e| anyhow::anyhow!("bad URL: {e}"))?;
 
-        let resp = match self.client.get(&url).send().await {
+        let resp = match self.client.get(url).send().await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(connector = "alpha_vantage_news", err = %e, "HTTP request failed");
