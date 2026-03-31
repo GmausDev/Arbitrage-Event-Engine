@@ -582,6 +582,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "exchange_api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "common",
+ "cost_model",
+ "metrics",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "execution_sim"
 version = "0.1.0"
 dependencies = [
@@ -1454,6 +1472,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "oms"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "common",
+ "cost_model",
+ "exchange_api",
+ "metrics",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1701,12 +1737,14 @@ dependencies = [
  "control-panel",
  "data_ingestion",
  "dotenvy",
+ "exchange_api",
  "execution_sim",
  "graph_arb_agent",
  "market_graph",
  "market_scanner",
  "meta_strategy",
  "metrics-exporter-prometheus",
+ "oms",
  "performance_analytics",
  "portfolio_engine",
  "portfolio_optimizer",

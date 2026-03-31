@@ -23,6 +23,8 @@ members = [
     "crates/signal_priority_engine",
     "crates/calibration",
     "crates/cost_model",
+    "crates/exchange_api",
+    "crates/oms",
 
     # Agent crates (library, spawned as async tasks from main)
     "agents/market_scanner",

@@ -18,8 +18,9 @@
 pub mod config;
 pub mod model;
 
-pub use config::CostModelConfig;
+pub use config::{CostModelConfig, ExchangeFees};
 pub use model::{
-    compute_cost_estimate, compute_expected_profit, compute_net_edge,
+    compute_cost_estimate, compute_cost_estimate_for_exchange,
+    compute_expected_profit, compute_net_edge,
     compute_net_edge_position_size, CostEstimate,
 };

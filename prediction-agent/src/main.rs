@@ -45,6 +45,9 @@ use strategy_research::{ResearchConfig, StrategyResearchEngine};
 // ── Data ingestion layer ───────────────────────────────────────────────────
 use data_ingestion::{DataIngestionEngine, IngestionConfig};
 
+// ── Order Management System (live trading) ───────────────────────────────────
+use oms::{OrderManager, manager::OmsConfig};
+
 // ── Control panel ─────────────────────────────────────────────────────────────
 use control_panel::{AppState as ControlPanelState, ControlPanelServer};
 
@@ -169,6 +172,64 @@ async fn main() -> Result<()> {
         },
         bus.clone(),
     );
+
+    // ── 5b. Order Management System (live execution layer) ────────────────
+    //
+    // The OMS replaces execution_sim when LIVE_TRADING=true is set.
+    // In dry-run mode (default) it logs orders without sending them.
+    // When live, it routes ApprovedTrade events to exchange connectors.
+    let live_trading = std::env::var("LIVE_TRADING")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    let oms = OrderManager::new(
+        OmsConfig {
+            live_trading_enabled: live_trading,
+            bankroll: config.paper_bankroll,
+            ..OmsConfig::default()
+        },
+        bus.clone(),
+    );
+    // Exchange connectors are registered only when live trading is enabled
+    // and the required credentials are present.  In paper mode the OMS
+    // still runs but synthesizes fills locally (dry-run).
+    let oms = if live_trading {
+        info!("prediction-agent: LIVE TRADING enabled — orders will be sent to exchanges");
+        let oms = if std::env::var("POLYMARKET_API_KEY").is_ok() {
+            let creds = exchange_api::ExchangeCredentials::from_env("POLYMARKET");
+            match exchange_api::connectors::polymarket::PolymarketConnector::new(creds) {
+                Ok(c) => {
+                    info!("oms: Polymarket connector registered");
+                    oms.with_exchange(std::sync::Arc::new(c))
+                }
+                Err(e) => {
+                    tracing::warn!(err = %e, "oms: failed to create Polymarket connector");
+                    oms
+                }
+            }
+        } else {
+            oms
+        };
+        let oms = if std::env::var("KALSHI_API_KEY").is_ok() {
+            let creds = exchange_api::ExchangeCredentials::from_env("KALSHI");
+            match exchange_api::connectors::kalshi::KalshiConnector::new(creds) {
+                Ok(c) => {
+                    info!("oms: Kalshi connector registered");
+                    oms.with_exchange(std::sync::Arc::new(c))
+                }
+                Err(e) => {
+                    tracing::warn!(err = %e, "oms: failed to create Kalshi connector");
+                    oms
+                }
+            }
+        } else {
+            oms
+        };
+        oms
+    } else {
+        info!("prediction-agent: paper trading mode — OMS will dry-run all orders");
+        oms
+    };
 
     // ── 6. Agents ───────────────────────────────────────────────────────────
 
@@ -311,6 +372,7 @@ async fn main() -> Result<()> {
     let h_port_eng       = tokio::spawn(port_eng.run(cancel.child_token()));
     let h_analytics      = tokio::spawn(analytics.run(cancel.child_token()));
     let h_calibration    = tokio::spawn(calibration_eng.run(cancel.child_token()));
+    let h_oms            = tokio::spawn(oms.run(cancel.child_token()));
 
     // ── 9. Await shutdown ───────────────────────────────────────────────────
     info!("prediction-agent: all tasks running — press Ctrl-C to stop");
@@ -327,7 +389,7 @@ async fn main() -> Result<()> {
         h_signal, h_shock_det, h_graph_arb, h_temporal, h_bayes_edge, h_meta_strat,
         h_rel_disc, h_strategy_res, h_data_ingestion,
         h_priority_eng, h_port_opt, h_port_eng, h_analytics,
-        h_calibration, h_control_panel,
+        h_calibration, h_oms, h_control_panel,
     ));
 
     Ok(())

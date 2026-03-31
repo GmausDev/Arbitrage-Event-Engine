@@ -156,6 +156,7 @@ fn cm11_position_scaling_zero_gross() {
 fn cm12_custom_config() {
     let cfg = CostModelConfig {
         fee_rate:                0.01,   // lower fee
+        exchange_fees:           Default::default(),
         spread_volatility_k:     0.25,
         liquidity_impact_factor: 0.0005,
         decay_rate:              0.0005,
