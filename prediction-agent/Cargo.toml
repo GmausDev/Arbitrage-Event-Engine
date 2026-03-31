@@ -42,6 +42,10 @@ control-panel            = { path = "../control-panel" }
 exchange_api             = { path = "../crates/exchange_api" }
 oms                      = { path = "../crates/oms" }
 
+# Persistence & cost model
+persistence              = { path = "../crates/persistence" }
+cost_model               = { path = "../crates/cost_model" }
+
 # Runtime & utilities
 tokio      = { workspace = true }
 tokio-util = { workspace = true }
@@ -52,3 +56,4 @@ config     = { workspace = true }
 serde      = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 dotenvy    = { workspace = true }
+metrics    = { workspace = true }
