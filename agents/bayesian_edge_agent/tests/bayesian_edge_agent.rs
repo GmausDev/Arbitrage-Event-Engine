@@ -131,7 +131,7 @@ async fn no_signal_without_market_price() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -153,7 +153,7 @@ async fn buy_signal_on_large_positive_deviation() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -180,7 +180,7 @@ async fn sell_signal_on_negative_deviation() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -202,7 +202,7 @@ async fn low_confidence_suppressed_without_shock() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -226,7 +226,7 @@ async fn shock_boosts_confidence_above_threshold() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -257,7 +257,7 @@ async fn graph_damp_reduces_effective_deviation() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -287,7 +287,7 @@ async fn signal_fires_regardless_of_event_order() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -309,7 +309,7 @@ async fn multi_market_independent_signals() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = BayesianEdgeAgent::new(test_config(), bus.clone());
+    let agent = BayesianEdgeAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 

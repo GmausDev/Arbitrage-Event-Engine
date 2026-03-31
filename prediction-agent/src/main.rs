@@ -62,6 +62,10 @@ use portfolio_optimizer::{AllocationConfig, PortfolioOptimizer};
 use signal_priority_engine::{PriorityConfig, SignalPriorityEngine};
 use calibration::{CalibrationConfig, CalibrationEngine};
 
+// ── World model & scenario engine ────────────────────────────────────────────
+use world_model::{WorldModelConfig, WorldModelEngine};
+use scenario_engine::{ScenarioEngineConfig, ScenarioEngine};
+
 // ── Config ───────────────────────────────────────────────────────────────────
 mod app_config;
 use app_config::AppConfig;
@@ -82,13 +86,12 @@ async fn main() -> Result<()> {
     info!("prediction-agent: starting up");
 
     // ── 2. Metrics (Prometheus) ─────────────────────────────────────────────
-    // Starts an HTTP server on :9000/metrics for Prometheus scraping.
-    // TODO: make bind address configurable via AppConfig.
+    // Starts an HTTP server for Prometheus scraping.
     let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-    builder
-        .install()
-        .expect("failed to install Prometheus metrics exporter");
-    info!("metrics: Prometheus exporter installed (scrape :9000/metrics)");
+    match builder.install() {
+        Ok(()) => info!("metrics: Prometheus exporter installed (scrape :9000/metrics)"),
+        Err(e) => tracing::warn!(err = %e, "metrics: failed to install Prometheus exporter — continuing without metrics"),
+    }
 
     // ── 3. Configuration ────────────────────────────────────────────────────
     let config = AppConfig::load().unwrap_or_else(|e| {
@@ -165,7 +168,7 @@ async fn main() -> Result<()> {
 
     // simulation_engine — Monte Carlo / backtesting; in default LiveObserver
     // mode it passively tracks Execution/Portfolio events from the bus.
-    let sim_engine = SimulationEngine::new(SimulationConfig::default(), bus.clone());
+    let sim_engine = SimulationEngine::new(SimulationConfig::default(), bus.clone())?;
 
     // execution_sim — simulated order fill; publishes ExecutionResult and
     // PortfolioUpdate. NO real orders are sent. paper_bankroll sets reference capital.
@@ -201,7 +204,7 @@ async fn main() -> Result<()> {
         info!("prediction-agent: LIVE TRADING enabled — orders will be sent to exchanges");
         let oms = if std::env::var("POLYMARKET_API_KEY").is_ok() {
             let creds = exchange_api::ExchangeCredentials::from_env("POLYMARKET");
-            match exchange_api::connectors::polymarket::PolymarketConnector::new(creds) {
+            match exchange_api::connectors::polymarket::PolymarketConnector::new(creds, exchange_api::config::ConnectorConfig::polymarket_defaults()) {
                 Ok(c) => {
                     info!("oms: Polymarket connector registered");
                     oms.with_exchange(std::sync::Arc::new(c))
@@ -216,7 +219,7 @@ async fn main() -> Result<()> {
         };
         let oms = if std::env::var("KALSHI_API_KEY").is_ok() {
             let creds = exchange_api::ExchangeCredentials::from_env("KALSHI");
-            match exchange_api::connectors::kalshi::KalshiConnector::new(creds) {
+            match exchange_api::connectors::kalshi::KalshiConnector::new(creds, exchange_api::config::ConnectorConfig::kalshi_defaults()) {
                 Ok(c) => {
                     info!("oms: Kalshi connector registered");
                     oms.with_exchange(std::sync::Arc::new(c))
@@ -242,7 +245,7 @@ async fn main() -> Result<()> {
     // AccountReconciler periodically checks exchange balances.
     let db_path = std::env::var("PERSISTENCE_DB_PATH")
         .unwrap_or_else(|_| "data/arbitrage.db".into());
-    let db = Arc::new(Database::open(&db_path).expect("failed to open persistence database"));
+    let db = Arc::new(Database::open(&db_path)?);
     info!("persistence: database opened at {db_path}");
 
     let cost_config = CostModelConfig::default();
@@ -257,13 +260,13 @@ async fn main() -> Result<()> {
     if live_trading {
         if std::env::var("POLYMARKET_API_KEY").is_ok() {
             let creds = exchange_api::ExchangeCredentials::from_env("POLYMARKET");
-            if let Ok(c) = exchange_api::connectors::polymarket::PolymarketConnector::new(creds) {
+            if let Ok(c) = exchange_api::connectors::polymarket::PolymarketConnector::new(creds, exchange_api::config::ConnectorConfig::polymarket_defaults()) {
                 reconciler = reconciler.with_exchange(Arc::new(c));
             }
         }
         if std::env::var("KALSHI_API_KEY").is_ok() {
             let creds = exchange_api::ExchangeCredentials::from_env("KALSHI");
-            if let Ok(c) = exchange_api::connectors::kalshi::KalshiConnector::new(creds) {
+            if let Ok(c) = exchange_api::connectors::kalshi::KalshiConnector::new(creds, exchange_api::config::ConnectorConfig::kalshi_defaults()) {
                 reconciler = reconciler.with_exchange(Arc::new(c));
             }
         }
@@ -277,58 +280,64 @@ async fn main() -> Result<()> {
         poll_interval_ms: config.tick_interval_ms,
         ..ScannerConfig::default()
     };
-    let scanner = MarketScanner::new(bus.clone(), scanner_cfg.clone())
-        .with_source(Box::new(
-            PolymarketClient::new(
-                &scanner_cfg.polymarket_base_url,
-                scanner_cfg.request_timeout_ms,
-            )
-            .expect("failed to build Polymarket HTTP client"),
-        ))
-        .with_source(Box::new(
-            KalshiClient::new(
-                &scanner_cfg.kalshi_base_url,
-                scanner_cfg.request_timeout_ms,
-            )
-            .expect("failed to build Kalshi HTTP client"),
-        ));
+    let mut scanner = MarketScanner::new(bus.clone(), scanner_cfg.clone());
+    match PolymarketClient::new(
+        &scanner_cfg.polymarket_base_url,
+        scanner_cfg.request_timeout_ms,
+    ) {
+        Ok(client) => {
+            scanner = scanner.with_source(Box::new(client));
+            info!("scanner: Polymarket source registered");
+        }
+        Err(e) => tracing::warn!(err = %e, "scanner: failed to build Polymarket HTTP client — skipping source"),
+    }
+    match KalshiClient::new(
+        &scanner_cfg.kalshi_base_url,
+        scanner_cfg.request_timeout_ms,
+    ) {
+        Ok(client) => {
+            scanner = scanner.with_source(Box::new(client));
+            info!("scanner: Kalshi source registered");
+        }
+        Err(e) => tracing::warn!(err = %e, "scanner: failed to build Kalshi HTTP client — skipping source"),
+    }
 
     // signal_agent — converts Bayesian posteriors into sized TradeSignal events.
     let signal = SignalAgent::new(bus.clone(), SignalAgentConfig::default());
 
     // shock_detector — detects price and sentiment shocks, publishes Event::Shock.
-    let shock_det = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let shock_det = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone())?;
 
     // graph_arb_agent — detects arbitrage between graph-implied and market prices.
-    let graph_arb = GraphArbAgent::new(GraphArbConfig::default(), bus.clone());
+    let graph_arb = GraphArbAgent::new(GraphArbConfig::default(), bus.clone())?;
 
     // temporal_agent — detects momentum trends from rolling price history.
-    let temporal = TemporalAgent::new(TemporalConfig::default(), bus.clone());
+    let temporal = TemporalAgent::new(TemporalConfig::default(), bus.clone())?;
 
     // bayesian_edge_agent — Bayesian deviation signals with shock boost and graph damping.
-    let bayes_edge = BayesianEdgeAgent::new(BayesianEdgeConfig::default(), bus.clone());
+    let bayes_edge = BayesianEdgeAgent::new(BayesianEdgeConfig::default(), bus.clone())?;
 
     // meta_strategy — fuses signals from all strategy agents into MetaSignals.
-    let meta_strat = MetaStrategyEngine::new(MetaStrategyConfig::default(), bus.clone());
+    let meta_strat = MetaStrategyEngine::new(MetaStrategyConfig::default(), bus.clone())?;
 
     // relationship_discovery — discovers statistical/semantic relationships between
     // markets from price co-movement, emits Event::RelationshipDiscovered.
-    let rel_disc = RelationshipDiscoveryEngine::new(RelationshipDiscoveryConfig::default(), bus.clone());
+    let rel_disc = RelationshipDiscoveryEngine::new(RelationshipDiscoveryConfig::default(), bus.clone())?;
 
     // strategy_research — automated hypothesis generation and backtesting loop.
     // Runs on a 5-minute timer; emits Event::StrategyDiscovered for promoted strategies.
-    let strategy_research = StrategyResearchEngine::new(ResearchConfig::default(), bus.clone());
+    let strategy_research = StrategyResearchEngine::new(ResearchConfig::default(), bus.clone())?;
 
     // data_ingestion — collects market data, news, social trends, economic
     // releases, and calendar events from external APIs (stubs in sim mode).
     // Publishes Event::Market, MarketSnapshot, NewsEvent, SocialTrend,
     // EconomicRelease, and CalendarEvent to the bus.
-    let data_ingestion = DataIngestionEngine::new(IngestionConfig::default(), bus.clone());
+    let data_ingestion = DataIngestionEngine::new(IngestionConfig::default(), bus.clone())?;
 
     // signal_priority_engine — classifies signals as fast (immediate) or slow
     // (batched), routing fast signals directly to risk_engine via FastSignal and
     // slow signals to portfolio_optimizer via TopSignalsBatch.
-    let priority_engine = SignalPriorityEngine::new(PriorityConfig::default(), bus.clone());
+    let priority_engine = SignalPriorityEngine::new(PriorityConfig::default(), bus.clone())?;
 
     // portfolio_optimizer — batches TradeSignals and applies correlation penalty.
     // `use_priority_engine: true` makes it consume TopSignalsBatch instead of
@@ -349,7 +358,7 @@ async fn main() -> Result<()> {
             ..PortfolioConfig::default()
         },
         bus.clone(),
-    );
+    )?;
 
     // performance_analytics — Sharpe, drawdown, MTM PnL metrics.
     let analytics = PerformanceAnalytics::new(
@@ -358,10 +367,18 @@ async fn main() -> Result<()> {
             ..AnalyticsConfig::default()
         },
         bus.clone(),
-    );
+    )?;
 
     // calibration — tracks posteriors vs resolved outcomes, emits CalibrationUpdate.
     let calibration_eng = CalibrationEngine::new(CalibrationConfig::default(), bus.clone());
+
+    // world_model — maintains a causal probability graph over event outcomes,
+    // publishes Event::WorldProbability consumed by scenario_engine.
+    let world_model_eng = WorldModelEngine::new(WorldModelConfig::default(), bus.clone())?;
+
+    // scenario_engine — samples multi-market scenario trees from WorldProbability
+    // distributions; publishes Event::ScenarioBatch for downstream consumers.
+    let scenario_eng = ScenarioEngine::new(ScenarioEngineConfig::default(), bus.clone())?;
 
     // ── 7. Cancellation token for graceful shutdown ─────────────────────────
     let cancel = CancellationToken::new();
@@ -376,12 +393,10 @@ async fn main() -> Result<()> {
         cp_state.clone(),
         cancel.clone(),
     );
-    let cp_server = ControlPanelServer::new(
-        cp_state,
-        "0.0.0.0:3001".parse().expect("invalid control-panel bind address"),
-    );
+    let cp_bind_addr = config.control_panel_bind_addr.parse()?;
+    let cp_server = ControlPanelServer::new(cp_state, cp_bind_addr);
     let h_control_panel = tokio::spawn(cp_server.run(cancel.clone()));
-    info!("control_panel: server listening on http://0.0.0.0:3001");
+    info!("control_panel: server listening on http://{}", config.control_panel_bind_addr);
 
     // ── 9. Spawn all tasks ──────────────────────────────────────────────────
     info!("prediction-agent: spawning engine and agent tasks");
@@ -393,6 +408,8 @@ async fn main() -> Result<()> {
     let h_risk  = tokio::spawn(risk_eng.run(cancel.child_token()));
     let h_sim   = tokio::spawn(sim_engine.run(cancel.child_token()));
     let h_exec  = tokio::spawn(exec_sim.run(cancel.child_token()));
+    let h_world_model    = tokio::spawn(world_model_eng.run(cancel.child_token()));
+    let h_scenario_eng   = tokio::spawn(scenario_eng.run(cancel.child_token()));
 
     // Agents
     let h_scanner  = tokio::spawn(scanner.run(cancel.child_token()));
@@ -430,6 +447,7 @@ async fn main() -> Result<()> {
     // Drop remaining stub tasks (they will be cancelled on process exit).
     drop((
         h_graph, h_bayes, h_risk, h_sim, h_exec,
+        h_world_model, h_scenario_eng,
         h_scanner,
         h_signal, h_shock_det, h_graph_arb, h_temporal, h_bayes_edge, h_meta_strat,
         h_rel_disc, h_strategy_res, h_data_ingestion,

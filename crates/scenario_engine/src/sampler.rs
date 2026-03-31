@@ -30,6 +30,7 @@ use std::time::Instant;
 use chrono::Utc;
 use rand::Rng;
 
+use crate::error::ScenarioEngineError;
 use crate::types::{DependencyEdge, MarketId, Scenario, ScenarioBatch};
 
 /// Generate `sample_size` independent Monte Carlo scenarios.
@@ -37,12 +38,28 @@ use crate::types::{DependencyEdge, MarketId, Scenario, ScenarioBatch};
 /// `beliefs` — world-model probability for each market in [0, 1].
 /// `dependencies` — influence edges applied during sampling.
 ///
-/// Returns immediately (with empty market outcome maps) if `beliefs` is empty.
+/// # Errors
+///
+/// Returns `ScenarioEngineError::EmptyBeliefState` if `beliefs` is empty.
+/// Returns `ScenarioEngineError::InvalidSampleSize` if `sample_size` is 0.
+/// Returns `ScenarioEngineError::InvalidProbability` if any belief probability is outside [0.0, 1.0].
 pub fn sample_scenarios(
     beliefs: &HashMap<MarketId, f64>,
     dependencies: &[DependencyEdge],
     sample_size: usize,
-) -> ScenarioBatch {
+) -> Result<ScenarioBatch, ScenarioEngineError> {
+    if beliefs.is_empty() {
+        return Err(ScenarioEngineError::EmptyBeliefState);
+    }
+    if sample_size == 0 {
+        return Err(ScenarioEngineError::InvalidSampleSize(0));
+    }
+    for (_, &prob) in beliefs {
+        if !(0.0..=1.0).contains(&prob) {
+            return Err(ScenarioEngineError::InvalidProbability(prob));
+        }
+    }
+
     let start = Instant::now();
     // Capture once; all scenarios in this batch share the same timestamp.
     let batch_timestamp = Utc::now();
@@ -85,11 +102,11 @@ pub fn sample_scenarios(
         });
     }
 
-    ScenarioBatch {
+    Ok(ScenarioBatch {
         scenarios,
         sample_size,
         generation_time_ms: start.elapsed().as_millis() as u64,
-    }
+    })
 }
 
 /// Sample one scenario with two passes.
@@ -154,23 +171,36 @@ mod tests {
     #[test]
     fn outcomes_are_boolean() {
         let b = beliefs(&[("A", 0.6), ("B", 0.3)]);
-        let batch = sample_scenarios(&b, &[], 100);
+        let batch = sample_scenarios(&b, &[], 100).unwrap();
         for scenario in &batch.scenarios {
             assert_eq!(scenario.market_outcomes.len(), 2, "missing market outcomes");
         }
     }
 
     #[test]
-    fn empty_beliefs_returns_empty_batch() {
-        let batch = sample_scenarios(&HashMap::new(), &[], 500);
-        assert_eq!(batch.sample_size, 500);
-        assert!(batch.scenarios.iter().all(|s| s.market_outcomes.is_empty()));
+    fn empty_beliefs_returns_error() {
+        let result = sample_scenarios(&HashMap::new(), &[], 500);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zero_sample_size_returns_error() {
+        let b = beliefs(&[("A", 0.5)]);
+        let result = sample_scenarios(&b, &[], 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_probability_returns_error() {
+        let b = beliefs(&[("A", 1.5)]);
+        let result = sample_scenarios(&b, &[], 100);
+        assert!(result.is_err());
     }
 
     #[test]
     fn certain_market_always_true() {
         let b = beliefs(&[("CERTAIN", 1.0)]);
-        let batch = sample_scenarios(&b, &[], 200);
+        let batch = sample_scenarios(&b, &[], 200).unwrap();
         assert!(batch
             .scenarios
             .iter()
@@ -180,7 +210,7 @@ mod tests {
     #[test]
     fn impossible_market_always_false() {
         let b = beliefs(&[("IMPOSSIBLE", 0.0)]);
-        let batch = sample_scenarios(&b, &[], 200);
+        let batch = sample_scenarios(&b, &[], 200).unwrap();
         assert!(batch
             .scenarios
             .iter()
@@ -197,7 +227,7 @@ mod tests {
             child: "CHILD".into(),
             weight: 0.5,
         };
-        let batch = sample_scenarios(&b, &[dep], 1_000);
+        let batch = sample_scenarios(&b, &[dep], 1_000).unwrap();
         let child_true = batch
             .scenarios
             .iter()
@@ -221,7 +251,7 @@ mod tests {
             child: "CHILD".into(),
             weight: -0.5,
         };
-        let batch = sample_scenarios(&b, &[dep], 1_000);
+        let batch = sample_scenarios(&b, &[dep], 1_000).unwrap();
         let child_true = batch
             .scenarios
             .iter()
@@ -238,7 +268,7 @@ mod tests {
     fn batch_timestamp_is_uniform() {
         // All scenarios in a batch must share the same timestamp (captured once).
         let b = beliefs(&[("A", 0.5)]);
-        let batch = sample_scenarios(&b, &[], 50);
+        let batch = sample_scenarios(&b, &[], 50).unwrap();
         let ts = batch.scenarios[0].timestamp;
         assert!(
             batch.scenarios.iter().all(|s| s.timestamp == ts),

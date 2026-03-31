@@ -79,7 +79,7 @@ fn single_hop_propagation() {
     // Capture old_prob BEFORE writing new_prob — critical for correct delta.
     let old_a = state.variables["A"].current_probability; // 0.5
     state.variables.get_mut("A").unwrap().current_probability = 0.75;
-    propagate_update(&mut state, "A", old_a, 0.75, &mut result, 4, 0.6, 1e-6);
+    propagate_update(&mut state, "A", old_a, 0.75, &mut result, 4, 0.6, 1e-6).unwrap();
 
     // A must be at new prob.
     assert!((state.variables["A"].current_probability - 0.75).abs() < 1e-6);
@@ -110,7 +110,7 @@ fn negative_weight_inverts_direction() {
     let mut result = WorldInferenceResult::default();
     let old_a = state.variables["A"].current_probability;
     state.variables.get_mut("A").unwrap().current_probability = 0.75;
-    propagate_update(&mut state, "A", old_a, 0.75, &mut result, 4, 0.6, 1e-6);
+    propagate_update(&mut state, "A", old_a, 0.75, &mut result, 4, 0.6, 1e-6).unwrap();
 
     assert!(state.variables["B"].current_probability < 0.5,
         "B={}, expected < 0.5 with negative weight", state.variables["B"].current_probability);
@@ -144,7 +144,7 @@ fn multi_hop_propagation() {
     let mut result = WorldInferenceResult::default();
     let old_a = state.variables["A"].current_probability;
     state.variables.get_mut("A").unwrap().current_probability = 0.8;
-    propagate_update(&mut state, "A", old_a, 0.8, &mut result, 4, 0.6, 1e-9);
+    propagate_update(&mut state, "A", old_a, 0.8, &mut result, 4, 0.6, 1e-9).unwrap();
 
     // All three markets should be updated.
     assert!(result.updated_probabilities.contains_key("A"));
@@ -195,7 +195,7 @@ fn hop_limit_prevents_deep_propagation() {
     let mut result = WorldInferenceResult::default();
     let old_a = state.variables["A"].current_probability;
     state.variables.get_mut("A").unwrap().current_probability = 0.8;
-    propagate_update(&mut state, "A", old_a, 0.8, &mut result, 1, 1.0, 1e-9);
+    propagate_update(&mut state, "A", old_a, 0.8, &mut result, 1, 1.0, 1e-9).unwrap();
 
     assert!(result.updated_probabilities.contains_key("A"));
     assert!(result.updated_probabilities.contains_key("B"));
@@ -239,7 +239,7 @@ fn cyclic_dependencies_do_not_loop_forever() {
     let old_a = state.variables["A"].current_probability;
     state.variables.get_mut("A").unwrap().current_probability = 0.75;
     // This must terminate without hanging.
-    propagate_update(&mut state, "A", old_a, 0.75, &mut result, 10, 0.8, 1e-9);
+    propagate_update(&mut state, "A", old_a, 0.75, &mut result, 10, 0.8, 1e-9).unwrap();
 
     // Exactly one propagation edge (A→B); B→A is blocked by visited set.
     assert!(
@@ -273,7 +273,7 @@ fn stability_under_repeated_updates() {
         let old_a = state.variables["A"].current_probability;
         state.variables.get_mut("A").unwrap().current_probability = target;
         let mut result = WorldInferenceResult::default();
-        propagate_update(&mut state, "A", old_a, target, &mut result, 4, 0.6, 1e-9);
+        propagate_update(&mut state, "A", old_a, target, &mut result, 4, 0.6, 1e-9).unwrap();
 
         let new_b = state.variables["B"].current_probability;
         let change = (new_b - prev_b).abs();
@@ -422,8 +422,8 @@ fn add_dependency_replaces_duplicate_edge() {
         lag_seconds: 0.0,
         confidence: 0.8,
     };
-    assert!(state.add_dependency(dep1).is_none());
-    let replaced = state.add_dependency(dep2);
+    assert!(state.add_dependency(dep1).unwrap().is_none());
+    let replaced = state.add_dependency(dep2).unwrap();
     assert!(replaced.is_some(), "should return the old dep");
     assert!((replaced.unwrap().weight - 0.5).abs() < 1e-9);
     assert_eq!(state.dependencies.len(), 1, "should not have duplicate edges");
@@ -443,7 +443,7 @@ async fn engine_emits_world_probability_on_posterior() {
         min_signal_edge: 0.0, // emit signals regardless of edge size
         ..WorldModelConfig::default()
     };
-    let engine = WorldModelEngine::new(config, bus.clone());
+    let engine = WorldModelEngine::new(config, bus.clone()).unwrap();
 
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
@@ -509,7 +509,7 @@ async fn engine_propagates_through_dependencies() {
         propagation_threshold: 1e-9,
         ..WorldModelConfig::default()
     };
-    let engine = WorldModelEngine::new(config, bus.clone());
+    let engine = WorldModelEngine::new(config, bus.clone()).unwrap();
 
     // Pre-seed: A → B dependency, both starting at 0.5.
     {
@@ -527,7 +527,7 @@ async fn engine_propagates_through_dependencies() {
             weight: 0.8,
             lag_seconds: 0.0,
             confidence: 1.0,
-        });
+        }).unwrap();
     }
 
     let cancel = CancellationToken::new();
@@ -586,7 +586,7 @@ async fn engine_emits_inconsistency_on_constraint_violation() {
     let mut verify_rx = bus.subscribe();
 
     let config = WorldModelConfig::default();
-    let engine = WorldModelEngine::new(config, bus.clone());
+    let engine = WorldModelEngine::new(config, bus.clone()).unwrap();
 
     // Pre-seed the world state: add two markets and a mutual exclusion constraint
     // so that when both hit high probabilities we get a violation.

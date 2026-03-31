@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn default_engine() -> PerformanceAnalytics {
-    PerformanceAnalytics::new(AnalyticsConfig::default(), EventBus::new())
+    PerformanceAnalytics::new(AnalyticsConfig::default(), EventBus::new()).unwrap()
 }
 
 fn make_portfolio(pnl: f64, exposure: f64, positions: Vec<Position>) -> Portfolio {
@@ -82,7 +82,7 @@ fn history_window_evicts_oldest() {
         initial_bankroll: 10_000.0,
         ..Default::default()
     };
-    let mut engine = PerformanceAnalytics::new(config, EventBus::new());
+    let mut engine = PerformanceAnalytics::new(config, EventBus::new()).unwrap();
 
     for i in 0..5_u32 {
         engine.process_portfolio_update(&make_update(i as f64, 0.0, vec![]));
@@ -174,7 +174,7 @@ fn sharpe_positive_for_monotonic_gains() {
         tick_interval_secs: 365.25 * 24.0 * 3600.0, // ann_factor = 1.0
         ..Default::default()
     };
-    let mut engine = PerformanceAnalytics::new(config, EventBus::new());
+    let mut engine = PerformanceAnalytics::new(config, EventBus::new()).unwrap();
 
     // Uniformly increasing PnL: returns are all +10
     for i in 0..10_u32 {
@@ -286,7 +286,7 @@ async fn portfolio_event_produces_snapshot() {
     // eliminating the subscribe-after-spawn race.
     let mut verify_rx = bus.subscribe();
 
-    let engine  = PerformanceAnalytics::new(config, bus.clone());
+    let engine  = PerformanceAnalytics::new(config, bus.clone()).unwrap();
     let cancel2 = cancel.clone();
     tokio::spawn(async move { engine.run(cancel2).await });
 
@@ -326,7 +326,7 @@ async fn multiple_portfolio_updates_dont_exceed_window() {
     };
 
     let mut verify_rx = bus.subscribe();
-    let engine  = PerformanceAnalytics::new(config, bus.clone());
+    let engine  = PerformanceAnalytics::new(config, bus.clone()).unwrap();
     let cancel2 = cancel.clone();
     tokio::spawn(async move { engine.run(cancel2).await });
 

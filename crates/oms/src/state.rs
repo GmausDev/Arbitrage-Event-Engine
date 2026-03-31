@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use common::TradeDirection;
 use exchange_api::{ExchangeOrder, OrderId, OrderRequest, OrderStatus};
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub struct ManagedOrder {
     /// The original order request submitted by the execution engine.
     pub request: OrderRequest,
+    /// The trade direction from the original `ApprovedTrade`.
+    pub direction: TradeDirection,
     /// Exchange name this order was sent to.
     pub exchange: String,
     /// Exchange-assigned order ID (set after successful submission).
@@ -83,12 +86,13 @@ pub struct OrderManagerState {
 
 impl OrderManagerState {
     /// Register a new order.  Returns the OMS ID.
-    pub fn insert_order(&mut self, request: OrderRequest, exchange: &str) -> u64 {
+    pub fn insert_order(&mut self, request: OrderRequest, exchange: &str, direction: TradeDirection) -> u64 {
         let oms_id = self.next_id;
         self.next_id += 1;
 
         let managed = ManagedOrder {
             request,
+            direction,
             exchange: exchange.to_string(),
             exchange_order_id: None,
             status: OrderStatus::Pending,

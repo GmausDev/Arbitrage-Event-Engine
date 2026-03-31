@@ -71,17 +71,17 @@ pub struct InformationShockDetector {
 }
 
 impl InformationShockDetector {
-    pub fn new(config: ShockDetectorConfig, bus: EventBus) -> Self {
+    pub fn new(config: ShockDetectorConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid ShockDetectorConfig: {e}");
+            return Err(anyhow::anyhow!("invalid ShockDetectorConfig: {e}"));
         }
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     /// Clone the shared state handle for external inspection (e.g. in tests).

@@ -99,17 +99,17 @@ pub struct WorldModelEngine {
 }
 
 impl WorldModelEngine {
-    pub fn new(config: WorldModelConfig, bus: EventBus) -> Self {
-        if let Err(e) = config.validate() {
-            panic!("invalid WorldModelConfig: {e}");
-        }
+    pub fn new(config: WorldModelConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
+        config
+            .validate()
+            .map_err(|e| anyhow::anyhow!("invalid WorldModelConfig: {e}"))?;
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     /// Clone the shared state handle for external inspection (e.g. health checks).
@@ -215,7 +215,7 @@ impl WorldModelEngine {
 
             // Run world-model inference using the delta from old → new.
             let mut result = WorldInferenceResult::default();
-            propagate_update(
+            if let Err(e) = propagate_update(
                 &mut state,
                 &update.market_id,
                 old_prob,
@@ -224,7 +224,10 @@ impl WorldModelEngine {
                 self.config.max_propagation_hops,
                 self.config.propagation_damping,
                 self.config.propagation_threshold,
-            );
+            ) {
+                warn!("world_model: propagation validation failed: {e}");
+                return;
+            }
             state.last_inference_time = Some(Utc::now());
 
             // Check constraints.
@@ -297,7 +300,7 @@ impl WorldModelEngine {
                 .unwrap_or(old_prob);
 
             let mut result = WorldInferenceResult::default();
-            propagate_update(
+            if let Err(e) = propagate_update(
                 &mut state,
                 &update.source_market_id,
                 old_prob,
@@ -306,7 +309,10 @@ impl WorldModelEngine {
                 self.config.max_propagation_hops,
                 self.config.propagation_damping,
                 self.config.propagation_threshold,
-            );
+            ) {
+                warn!("world_model: propagation validation failed: {e}");
+                return;
+            }
             state.last_inference_time = Some(Utc::now());
 
             let violations = check_constraints(&state);

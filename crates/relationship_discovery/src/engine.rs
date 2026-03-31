@@ -51,17 +51,17 @@ pub struct RelationshipDiscoveryEngine {
 }
 
 impl RelationshipDiscoveryEngine {
-    pub fn new(config: RelationshipDiscoveryConfig, bus: EventBus) -> Self {
+    pub fn new(config: RelationshipDiscoveryConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid RelationshipDiscoveryConfig: {e}");
+            return Err(anyhow::anyhow!("invalid RelationshipDiscoveryConfig: {e}"));
         }
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     /// Clone the shared state handle (for external inspection / tests).

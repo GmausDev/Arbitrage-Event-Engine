@@ -16,16 +16,55 @@
 // API documentation: https://docs.polymarket.com/
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::{
+    config::ConnectorConfig,
     error::ExchangeError,
     types::*,
     ExchangeConnector,
 };
+
+// ── Retry helper ────────────────────────────────────────────────────────────
+
+async fn retry_request<F, Fut, T>(
+    max_retries: u32,
+    base_delay_ms: u64,
+    mut f: F,
+) -> Result<T, ExchangeError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, ExchangeError>>,
+{
+    for attempt in 0..=max_retries {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(ExchangeError::RateLimited { retry_after_ms }) => {
+                if attempt < max_retries {
+                    tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+                    continue;
+                }
+                return Err(ExchangeError::RateLimited { retry_after_ms });
+            }
+            Err(ExchangeError::Network(msg)) => {
+                if attempt < max_retries {
+                    let delay = base_delay_ms
+                        .saturating_mul(1u64.checked_shl(attempt).unwrap_or(u64::MAX))
+                        .min(30_000);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    continue;
+                }
+                return Err(ExchangeError::Network(msg));
+            }
+            Err(e) => return Err(e), // Non-transient errors fail immediately
+        }
+    }
+    Err(ExchangeError::Unavailable("retry loop exhausted".into()))
+}
 
 // ── API response types ───────────────────────────────────────────────────────
 
@@ -117,20 +156,18 @@ pub struct PolymarketConnector {
     /// Gamma API base URL (public market data).
     gamma_base: String,
     credentials: ExchangeCredentials,
+    fee_rate: f64,
+    min_order_usd: f64,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl PolymarketConnector {
-    /// CLOB API base URL.
-    const DEFAULT_CLOB_BASE: &'static str = "https://clob.polymarket.com";
-    /// Gamma API base URL for market data.
+    /// Gamma API base URL for market data (not in ConnectorConfig since it's
+    /// Polymarket-specific and the main config covers the CLOB endpoint).
     const DEFAULT_GAMMA_BASE: &'static str = "https://gamma-api.polymarket.com";
-    /// Polymarket charges no explicit fee on CLOB; takers pay ~1-2% spread.
-    /// We model this as 0.5% (conservative estimate of typical execution cost).
-    const FEE_RATE: f64 = 0.005;
-    /// Minimum order size on Polymarket.
-    const MIN_ORDER_USD: f64 = 1.0;
 
-    pub fn new(credentials: ExchangeCredentials) -> Result<Self, ExchangeError> {
+    pub fn new(credentials: ExchangeCredentials, config: ConnectorConfig) -> Result<Self, ExchangeError> {
         // Validate that we have the required credentials.
         credentials.require_key()?;
         credentials.require_secret()?;
@@ -143,9 +180,13 @@ impl PolymarketConnector {
 
         Ok(Self {
             client,
-            clob_base: Self::DEFAULT_CLOB_BASE.to_string(),
+            clob_base: config.base_url,
             gamma_base: Self::DEFAULT_GAMMA_BASE.to_string(),
             credentials,
+            fee_rate: config.fee_rate,
+            min_order_usd: config.min_order_usd,
+            max_retries: config.max_retries,
+            retry_base_delay_ms: config.retry_base_delay_ms,
         })
     }
 
@@ -193,6 +234,29 @@ impl PolymarketConnector {
             OrderSide::BuyYes
         }
     }
+
+    /// Parse Retry-After header value (in seconds) into milliseconds, with fallback.
+    fn parse_retry_after(resp: &reqwest::Response) -> u64 {
+        resp.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|secs| secs * 1000)
+            .unwrap_or(1000)
+    }
+
+    /// Execute an HTTP request and translate 429 into RateLimited.
+    async fn send_with_rate_check(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, ExchangeError> {
+        let resp = request.send().await?;
+        if resp.status() == 429 {
+            let retry_ms = Self::parse_retry_after(&resp);
+            return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+        }
+        Ok(resp)
+    }
 }
 
 #[async_trait]
@@ -219,6 +283,11 @@ impl ExchangeConnector for PolymarketConnector {
     }
 
     async fn place_order(&self, req: &OrderRequest) -> Result<OrderId, ExchangeError> {
+        let client = &self.client;
+        let clob_base = &self.clob_base;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+
         let side_str = match req.side {
             OrderSide::BuyYes => "BUY",
             OrderSide::BuyNo  => "SELL",
@@ -237,122 +306,145 @@ impl ExchangeConnector for PolymarketConnector {
             side:       side_str.to_string(),
             order_type: ot.to_string(),
         };
+        let payload_json = serde_json::to_value(&payload)
+            .map_err(|e| ExchangeError::ParseError(format!("failed to serialize order: {e}")))?;
 
-        let url = format!("{}/order", self.clob_base);
-        let resp = self.client
-            .post(&url)
-            .headers(self.auth_headers())
-            .json(&payload)
-            .send()
-            .await?;
+        retry_request(max_retries, base_delay, || {
+            let payload_json = payload_json.clone();
+            let headers = self.auth_headers();
+            let url = format!("{}/order", clob_base);
+            async move {
+                let resp = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&payload_json)
+                    .send()
+                    .await?;
 
-        if resp.status() == 429 {
-            return Err(ExchangeError::RateLimited { retry_after_ms: 1000 });
-        }
-        if resp.status() == 401 || resp.status() == 403 {
-            return Err(ExchangeError::AuthFailed("CLOB API authentication failed".into()));
-        }
+                if resp.status() == 429 {
+                    let retry_ms = resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|secs| secs * 1000)
+                        .unwrap_or(1000);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
+                if resp.status() == 401 || resp.status() == 403 {
+                    return Err(ExchangeError::AuthFailed("CLOB API authentication failed".into()));
+                }
 
-        let status = resp.status();
-        let body: ClobOrderResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("failed to parse CLOB order response: {e}"))
-        })?;
+                let status = resp.status();
+                let body: ClobOrderResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("failed to parse CLOB order response: {e}"))
+                })?;
 
-        if !body.success || !status.is_success() {
-            return Err(ExchangeError::OrderRejected(
-                if body.error_msg.is_empty() {
-                    format!("HTTP {status}")
-                } else {
-                    body.error_msg
-                },
-            ));
-        }
+                if !body.success || !status.is_success() {
+                    return Err(ExchangeError::OrderRejected(
+                        if body.error_msg.is_empty() {
+                            format!("HTTP {status}")
+                        } else {
+                            body.error_msg
+                        },
+                    ));
+                }
 
-        debug!(order_id = %body.order_id, "polymarket: order placed");
-        metrics::counter!("exchange_orders_placed_total", "exchange" => "polymarket").increment(1);
-        Ok(OrderId(body.order_id))
+                debug!(order_id = %body.order_id, "polymarket: order placed");
+                metrics::counter!("exchange_orders_placed_total", "exchange" => "polymarket").increment(1);
+                Ok(OrderId(body.order_id))
+            }
+        }).await
     }
 
     async fn cancel_order(&self, order_id: &OrderId) -> Result<CancelResult, ExchangeError> {
-        let url = format!("{}/order/{}", self.clob_base, order_id.0);
-        let resp = self.client
-            .delete(&url)
-            .headers(self.auth_headers())
-            .send()
-            .await?;
+        let client = &self.client;
+        let clob_base = &self.clob_base;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let oid = order_id.clone();
 
-        if !resp.status().is_success() {
-            return Err(ExchangeError::OrderRejected(
-                format!("cancel failed: HTTP {}", resp.status()),
-            ));
-        }
+        retry_request(max_retries, base_delay, || {
+            let headers = self.auth_headers();
+            let oid_str = oid.0.clone();
+            let url = format!("{}/order/{}", clob_base, oid_str);
+            async move {
+                let resp = client
+                    .delete(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
 
-        let body: ClobCancelResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("cancel response parse error: {e}"))
-        })?;
+                if resp.status() == 429 {
+                    let retry_ms = resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|secs| secs * 1000)
+                        .unwrap_or(1000);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
 
-        let success = body.canceled.contains(&order_id.0);
-        Ok(CancelResult {
-            order_id: order_id.clone(),
-            success,
-            filled_before_cancel_usd: 0.0, // CLOB doesn't report this on cancel
-        })
+                if !resp.status().is_success() {
+                    return Err(ExchangeError::OrderRejected(
+                        format!("cancel failed: HTTP {}", resp.status()),
+                    ));
+                }
+
+                let body: ClobCancelResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("cancel response parse error: {e}"))
+                })?;
+
+                let success = body.canceled.contains(&oid_str);
+                Ok(CancelResult {
+                    order_id: OrderId(oid_str),
+                    success,
+                    filled_before_cancel_usd: 0.0, // CLOB doesn't report this on cancel
+                })
+            }
+        }).await
     }
 
     async fn get_order_status(&self, order_id: &OrderId) -> Result<ExchangeOrder, ExchangeError> {
-        let url = format!("{}/order/{}", self.clob_base, order_id.0);
-        let resp = self.client
-            .get(&url)
-            .headers(self.auth_headers())
-            .send()
-            .await?;
+        let client = &self.client;
+        let clob_base = &self.clob_base;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let oid = order_id.clone();
 
-        if resp.status() == 404 {
-            return Err(ExchangeError::NotFound(format!("order {} not found", order_id)));
-        }
+        retry_request(max_retries, base_delay, || {
+            let headers = self.auth_headers();
+            let oid_inner = oid.0.clone();
+            let url = format!("{}/order/{}", clob_base, oid_inner);
+            async move {
+                let resp = client
+                    .get(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
 
-        let raw: ClobOpenOrder = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("order status parse error: {e}"))
-        })?;
+                if resp.status() == 429 {
+                    let retry_ms = resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|secs| secs * 1000)
+                        .unwrap_or(1000);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
 
-        let original: f64 = raw.original_size.parse().unwrap_or(0.0);
-        let matched: f64  = raw.size_matched.parse().unwrap_or(0.0);
-        let price: f64    = raw.price.parse().unwrap_or(0.0);
+                if resp.status() == 404 {
+                    return Err(ExchangeError::NotFound(format!("order {} not found", oid_inner)));
+                }
 
-        Ok(ExchangeOrder {
-            order_id:           OrderId(raw.id),
-            market_id:          raw.asset_id,
-            side:               Self::parse_side(&raw.side),
-            order_type:         OrderType::Limit,
-            status:             Self::parse_order_status(&raw.status),
-            requested_size_usd: original,
-            filled_size_usd:    matched,
-            avg_fill_price:     if matched > 0.0 { Some(price) } else { None },
-            limit_price:        Some(price),
-            created_at:         Utc::now(), // TODO: parse raw.created_at
-            updated_at:         Utc::now(),
-        })
-    }
+                let raw: ClobOpenOrder = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("order status parse error: {e}"))
+                })?;
 
-    async fn get_open_orders(&self) -> Result<Vec<ExchangeOrder>, ExchangeError> {
-        let url = format!("{}/orders", self.clob_base);
-        let resp = self.client
-            .get(&url)
-            .headers(self.auth_headers())
-            .send()
-            .await?;
-
-        let orders: Vec<ClobOpenOrder> = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("open orders parse error: {e}"))
-        })?;
-
-        Ok(orders
-            .into_iter()
-            .map(|raw| {
                 let original: f64 = raw.original_size.parse().unwrap_or(0.0);
                 let matched: f64  = raw.size_matched.parse().unwrap_or(0.0);
                 let price: f64    = raw.price.parse().unwrap_or(0.0);
-                ExchangeOrder {
+
+                Ok(ExchangeOrder {
                     order_id:           OrderId(raw.id),
                     market_id:          raw.asset_id,
                     side:               Self::parse_side(&raw.side),
@@ -362,68 +454,177 @@ impl ExchangeConnector for PolymarketConnector {
                     filled_size_usd:    matched,
                     avg_fill_price:     if matched > 0.0 { Some(price) } else { None },
                     limit_price:        Some(price),
-                    created_at:         Utc::now(),
+                    created_at:         DateTime::parse_from_rfc3339(&raw.created_at)
+                                            .map(|dt| dt.with_timezone(&Utc))
+                                            .unwrap_or_else(|_| {
+                                                warn!("polymarket: failed to parse created_at {:?}, using now()", raw.created_at);
+                                                Utc::now()
+                                            }),
                     updated_at:         Utc::now(),
+                })
+            }
+        }).await
+    }
+
+    async fn get_open_orders(&self) -> Result<Vec<ExchangeOrder>, ExchangeError> {
+        let client = &self.client;
+        let clob_base = &self.clob_base;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+
+        retry_request(max_retries, base_delay, || {
+            let headers = self.auth_headers();
+            let url = format!("{}/orders", clob_base);
+            async move {
+                let resp = client
+                    .get(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
+
+                if resp.status() == 429 {
+                    let retry_ms = resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|secs| secs * 1000)
+                        .unwrap_or(1000);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
                 }
-            })
-            .collect())
+
+                let orders: Vec<ClobOpenOrder> = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("open orders parse error: {e}"))
+                })?;
+
+                Ok(orders
+                    .into_iter()
+                    .map(|raw| {
+                        let original: f64 = raw.original_size.parse().unwrap_or(0.0);
+                        let matched: f64  = raw.size_matched.parse().unwrap_or(0.0);
+                        let price: f64    = raw.price.parse().unwrap_or(0.0);
+                        ExchangeOrder {
+                            order_id:           OrderId(raw.id),
+                            market_id:          raw.asset_id,
+                            side:               Self::parse_side(&raw.side),
+                            order_type:         OrderType::Limit,
+                            status:             Self::parse_order_status(&raw.status),
+                            requested_size_usd: original,
+                            filled_size_usd:    matched,
+                            avg_fill_price:     if matched > 0.0 { Some(price) } else { None },
+                            limit_price:        Some(price),
+                            created_at:         DateTime::parse_from_rfc3339(&raw.created_at)
+                                                    .map(|dt| dt.with_timezone(&Utc))
+                                                    .unwrap_or_else(|_| {
+                                                        warn!("polymarket: failed to parse created_at {:?}, using now()", raw.created_at);
+                                                        Utc::now()
+                                                    }),
+                            updated_at:         Utc::now(),
+                        }
+                    })
+                    .collect())
+            }
+        }).await
     }
 
     async fn get_order_book(&self, market_id: &str) -> Result<ExchangeOrderBook, ExchangeError> {
-        let url = format!("{}/book?token_id={}", self.clob_base, market_id);
-        let resp = self.client.get(&url).send().await?;
+        let client = &self.client;
+        let clob_base = &self.clob_base;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let market = market_id.to_string();
 
-        let raw: ClobOrderBookResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("order book parse error: {e}"))
-        })?;
+        retry_request(max_retries, base_delay, || {
+            let url = format!("{}/book?token_id={}", clob_base, market);
+            let market = market.clone();
+            async move {
+                let resp = client.get(&url).send().await?;
 
-        let bids = raw.bids.into_iter().map(|l| OrderBookLevel {
-            price:    l.price.parse().unwrap_or(0.0),
-            size_usd: l.size.parse().unwrap_or(0.0),
-        }).collect();
+                if resp.status() == 429 {
+                    let retry_ms = resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|secs| secs * 1000)
+                        .unwrap_or(1000);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
 
-        let asks = raw.asks.into_iter().map(|l| OrderBookLevel {
-            price:    l.price.parse().unwrap_or(0.0),
-            size_usd: l.size.parse().unwrap_or(0.0),
-        }).collect();
+                let raw: ClobOrderBookResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("order book parse error: {e}"))
+                })?;
 
-        Ok(ExchangeOrderBook {
-            market_id: market_id.to_string(),
-            bids,
-            asks,
-            timestamp: Utc::now(),
-        })
+                let bids = raw.bids.into_iter().map(|l| OrderBookLevel {
+                    price:    l.price.parse().unwrap_or(0.0),
+                    size_usd: l.size.parse().unwrap_or(0.0),
+                }).collect();
+
+                let asks = raw.asks.into_iter().map(|l| OrderBookLevel {
+                    price:    l.price.parse().unwrap_or(0.0),
+                    size_usd: l.size.parse().unwrap_or(0.0),
+                }).collect();
+
+                Ok(ExchangeOrderBook {
+                    market_id: market,
+                    bids,
+                    asks,
+                    timestamp: Utc::now(),
+                })
+            }
+        }).await
     }
 
     async fn get_recent_fills(&self, market_id: &str, limit: usize) -> Result<Vec<ExchangeFill>, ExchangeError> {
-        let url = format!(
-            "{}/trades?token_id={}&limit={}",
-            self.clob_base, market_id, limit
-        );
-        let resp = self.client.get(&url).send().await?;
+        let client = &self.client;
+        let clob_base = &self.clob_base;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let market = market_id.to_string();
 
-        let trades: Vec<ClobTradeResponse> = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("trades parse error: {e}"))
-        })?;
+        retry_request(max_retries, base_delay, || {
+            let url = format!("{}/trades?token_id={}&limit={}", clob_base, market, limit);
+            let market = market.clone();
+            async move {
+                let resp = client.get(&url).send().await?;
 
-        Ok(trades
-            .into_iter()
-            .map(|t| ExchangeFill {
-                market_id: market_id.to_string(),
-                price:     t.price.parse().unwrap_or(0.0),
-                size_usd:  t.size.parse().unwrap_or(0.0),
-                side:      Self::parse_side(&t.side),
-                timestamp: Utc::now(), // TODO: parse t.created_at
-            })
-            .collect())
+                if resp.status() == 429 {
+                    let retry_ms = resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|secs| secs * 1000)
+                        .unwrap_or(1000);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
+
+                let trades: Vec<ClobTradeResponse> = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("trades parse error: {e}"))
+                })?;
+
+                Ok(trades
+                    .into_iter()
+                    .map(|t| ExchangeFill {
+                        market_id: market.clone(),
+                        price:     t.price.parse().unwrap_or(0.0),
+                        size_usd:  t.size.parse().unwrap_or(0.0),
+                        side:      Self::parse_side(&t.side),
+                        timestamp: DateTime::parse_from_rfc3339(&t.created_at)
+                                       .map(|dt| dt.with_timezone(&Utc))
+                                       .unwrap_or_else(|_| {
+                                           warn!("polymarket: failed to parse fill created_at {:?}, using now()", t.created_at);
+                                           Utc::now()
+                                       }),
+                    })
+                    .collect())
+            }
+        }).await
     }
 
     fn fee_rate(&self) -> f64 {
-        Self::FEE_RATE
+        self.fee_rate
     }
 
     fn min_order_size_usd(&self) -> f64 {
-        Self::MIN_ORDER_USD
+        self.min_order_usd
     }
 }
 
@@ -443,5 +644,15 @@ mod tests {
         assert_eq!(PolymarketConnector::parse_order_status("live"), OrderStatus::Open);
         assert_eq!(PolymarketConnector::parse_order_status("matched"), OrderStatus::Filled);
         assert_eq!(PolymarketConnector::parse_order_status("cancelled"), OrderStatus::Cancelled);
+    }
+
+    #[test]
+    fn config_defaults() {
+        let cfg = ConnectorConfig::polymarket_defaults();
+        assert_eq!(cfg.base_url, "https://clob.polymarket.com");
+        assert!((cfg.fee_rate - 0.005).abs() < f64::EPSILON);
+        assert!((cfg.min_order_usd - 1.0).abs() < f64::EPSILON);
+        assert_eq!(cfg.max_retries, 3);
+        assert_eq!(cfg.retry_base_delay_ms, 250);
     }
 }

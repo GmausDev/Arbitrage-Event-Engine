@@ -110,7 +110,7 @@ async fn no_signal_without_graph_update() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(test_config(), bus.clone());
+    let agent = GraphArbAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -132,7 +132,7 @@ async fn no_signal_without_market_update() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(test_config(), bus.clone());
+    let agent = GraphArbAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -154,7 +154,7 @@ async fn buy_signal_when_implied_above_market() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(test_config(), bus.clone());
+    let agent = GraphArbAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -186,7 +186,7 @@ async fn sell_signal_when_implied_below_market() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(test_config(), bus.clone());
+    let agent = GraphArbAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -213,7 +213,7 @@ async fn no_signal_below_edge_threshold() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(test_config(), bus.clone());
+    let agent = GraphArbAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -237,7 +237,7 @@ async fn multi_market_graph_update_produces_multiple_signals() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(test_config(), bus.clone());
+    let agent = GraphArbAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -277,7 +277,7 @@ async fn signal_state_counters_accurate() {
     let bus = EventBus::new();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(test_config(), bus.clone());
+    let agent = GraphArbAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -334,7 +334,7 @@ async fn xplatform_arb_emits_buy_and_sell_signals() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -391,7 +391,7 @@ async fn xplatform_no_signal_when_spread_too_small() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -430,7 +430,7 @@ async fn xplatform_no_signal_same_platform() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -474,7 +474,7 @@ async fn xplatform_no_signal_when_titles_dissimilar() {
         xplatform_signal_cooldown_secs: 0,
         ..GraphArbConfig::default()
     };
-    let agent = GraphArbAgent::new(cfg, bus.clone());
+    let agent = GraphArbAgent::new(cfg, bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -501,7 +501,7 @@ async fn xplatform_state_counters_track_xplatform_signals() {
     let bus = EventBus::new();
     let cancel = CancellationToken::new();
 
-    let agent = GraphArbAgent::new(xplatform_config(), bus.clone());
+    let agent = GraphArbAgent::new(xplatform_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 

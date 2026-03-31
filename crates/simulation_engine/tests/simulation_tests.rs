@@ -189,7 +189,7 @@ fn test_correlated_markets_move_together() {
 fn test_monte_carlo_run_count() {
     let bus = EventBus::new();
     let cfg = fast_config(); // runs = 5
-    let mut engine = SimulationEngine::new(cfg, bus);
+    let mut engine = SimulationEngine::new(cfg, bus).unwrap();
     let results = engine.run_monte_carlo();
     assert_eq!(results.len(), 5, "expected 5 simulation results");
 }
@@ -200,7 +200,7 @@ fn test_monte_carlo_run_count() {
 fn test_collect_results_accumulates_across_calls() {
     let bus = EventBus::new();
     let cfg = fast_config();
-    let mut engine = SimulationEngine::new(cfg, bus);
+    let mut engine = SimulationEngine::new(cfg, bus).unwrap();
     engine.run_monte_carlo();
     engine.run_monte_carlo();
     assert_eq!(
@@ -314,7 +314,7 @@ fn test_generate_market_tick_market_count() {
         markets: three_market_specs(),
         ..fast_config()
     };
-    let mut engine = SimulationEngine::new(cfg, bus);
+    let mut engine = SimulationEngine::new(cfg, bus).unwrap();
     let tick = engine.generate_market_tick();
     assert_eq!(
         tick.market_updates.len(),
@@ -329,7 +329,7 @@ fn test_generate_market_tick_market_count() {
 fn test_parameter_sweep_result_count() {
     let bus = EventBus::new();
     let cfg = fast_config();
-    let mut engine = SimulationEngine::new(cfg, bus);
+    let mut engine = SimulationEngine::new(cfg, bus).unwrap();
 
     let points = vec![
         ParameterSweepPoint {
@@ -365,7 +365,7 @@ async fn test_engine_live_observer_cancels_cleanly() {
         ..SimulationConfig::default()
     };
     let cancel = CancellationToken::new();
-    let engine = SimulationEngine::new(cfg, bus);
+    let engine = SimulationEngine::new(cfg, bus).unwrap();
 
     let child  = cancel.child_token();
     let handle = tokio::spawn(engine.run(child));
@@ -407,7 +407,7 @@ async fn test_historical_replay_publishes_market_events() {
     cfg.history_dir    = dir.path().to_string_lossy().to_string();
     cfg.tick_interval_ms = 0; // no sleep
 
-    let mut engine = SimulationEngine::new(cfg, bus);
+    let mut engine = SimulationEngine::new(cfg, bus).unwrap();
     let published  = engine.run_historical_replay().await;
 
     assert_eq!(published, 2, "expected 2 ticks published");
@@ -459,8 +459,8 @@ fn fast_sim_config(seed: u64) -> MonteCarloSimConfig {
 #[test]
 fn test_mc_deterministic_with_seed() {
     let state = three_market_state();
-    let sim1  = MonteCarloSimulator::new(fast_sim_config(42));
-    let sim2  = MonteCarloSimulator::new(fast_sim_config(42));
+    let sim1  = MonteCarloSimulator::new(fast_sim_config(42)).unwrap();
+    let sim2  = MonteCarloSimulator::new(fast_sim_config(42)).unwrap();
 
     let r1 = sim1.run_monte_carlo(&state, 20, 50);
     let r2 = sim2.run_monte_carlo(&state, 20, 50);
@@ -479,7 +479,7 @@ fn test_mc_deterministic_with_seed() {
         "fixed-seed runs must yield identical var_95"
     );
     // Different seed → different result.
-    let sim3 = MonteCarloSimulator::new(fast_sim_config(999));
+    let sim3 = MonteCarloSimulator::new(fast_sim_config(999)).unwrap();
     let r3   = sim3.run_monte_carlo(&state, 20, 50);
     // The probability that two independent seeds give the SAME expected_return
     // to 12 decimal places is essentially zero.
@@ -494,7 +494,7 @@ fn test_mc_deterministic_with_seed() {
 #[test]
 fn test_mc_path_count() {
     let state = three_market_state();
-    let sim   = MonteCarloSimulator::new(fast_sim_config(1));
+    let sim   = MonteCarloSimulator::new(fast_sim_config(1)).unwrap();
 
     for &n in &[1usize, 10, 100] {
         let r = sim.run_monte_carlo(&state, n, 50);
@@ -507,7 +507,7 @@ fn test_mc_path_count() {
 #[test]
 fn test_mc_all_metrics_finite() {
     let state = three_market_state();
-    let sim   = MonteCarloSimulator::new(fast_sim_config(7));
+    let sim   = MonteCarloSimulator::new(fast_sim_config(7)).unwrap();
     let r     = sim.run_monte_carlo(&state, 200, 100);
 
     assert!(r.expected_return.is_finite(),    "expected_return must be finite");
@@ -534,8 +534,8 @@ fn test_mc_more_simulations_reduce_estimation_variance() {
     // With 50 paths vs 1 000 paths the SE should be √(1000/50) ≈ 4.5× tighter
     // for the larger run.  We assert SE_hi < SE_lo (Issue 12 fix).
     let state  = three_market_state();
-    let sim_lo = MonteCarloSimulator::new(fast_sim_config(100));
-    let sim_hi = MonteCarloSimulator::new(fast_sim_config(100));
+    let sim_lo = MonteCarloSimulator::new(fast_sim_config(100)).unwrap();
+    let sim_hi = MonteCarloSimulator::new(fast_sim_config(100)).unwrap();
 
     let r_lo = sim_lo.run_monte_carlo(&state, 50,   100);
     let r_hi = sim_hi.run_monte_carlo(&state, 1_000, 100);
@@ -575,8 +575,8 @@ fn test_mc_shock_injection_changes_distribution() {
         ..fast_sim_config(55)    // same base seed → same Gaussian path, different shock path
     };
 
-    let sim_no_shock = MonteCarloSimulator::new(no_shock_cfg);
-    let sim_shock    = MonteCarloSimulator::new(shock_cfg);
+    let sim_no_shock = MonteCarloSimulator::new(no_shock_cfg).unwrap();
+    let sim_shock    = MonteCarloSimulator::new(shock_cfg).unwrap();
 
     let r_clean = sim_no_shock.run_monte_carlo(&state, 500, 80);
     let r_shock  = sim_shock.run_monte_carlo(&state,   500, 80);
@@ -612,8 +612,8 @@ fn test_mc_mean_reversion_reduces_volatility() {
         ..fast_sim_config(77)
     };
 
-    let sim_lo = MonteCarloSimulator::new(low_rev_cfg);
-    let sim_hi = MonteCarloSimulator::new(high_rev_cfg);
+    let sim_lo = MonteCarloSimulator::new(low_rev_cfg).unwrap();
+    let sim_hi = MonteCarloSimulator::new(high_rev_cfg).unwrap();
 
     let r_lo = sim_lo.run_monte_carlo(&state, 400, 100);
     let r_hi = sim_hi.run_monte_carlo(&state, 400, 100);
@@ -643,7 +643,7 @@ fn test_mc_no_trades_keeps_equity_stable() {
         drift:            0.0,
         ..fast_sim_config(3)
     };
-    let sim = MonteCarloSimulator::new(cfg);
+    let sim = MonteCarloSimulator::new(cfg).unwrap();
     let r   = sim.run_monte_carlo(&state, 50, 100);
 
     for (i, path) in r.paths.iter().enumerate() {
@@ -680,8 +680,8 @@ fn test_mc_drift_changes_distribution() {
     let zero_drift = MonteCarloSimConfig { drift:  0.0,   ..fast_sim_config(11) };
     let neg_drift  = MonteCarloSimConfig { drift: -0.015, ..fast_sim_config(11) };
 
-    let r_flat = MonteCarloSimulator::new(zero_drift).run_monte_carlo(&state, 400, 150);
-    let r_down = MonteCarloSimulator::new(neg_drift) .run_monte_carlo(&state, 400, 150);
+    let r_flat = MonteCarloSimulator::new(zero_drift).unwrap().run_monte_carlo(&state, 400, 150);
+    let r_down = MonteCarloSimulator::new(neg_drift).unwrap().run_monte_carlo(&state, 400, 150);
 
     // Both must be finite.
     assert!(r_flat.expected_return.is_finite());
@@ -709,7 +709,7 @@ fn test_mc_drift_changes_distribution() {
 #[test]
 fn test_mc_zero_simulations_returns_default() {
     let state = three_market_state();
-    let sim   = MonteCarloSimulator::new(fast_sim_config(0));
+    let sim   = MonteCarloSimulator::new(fast_sim_config(0)).unwrap();
 
     let r_zero_sims  = sim.run_monte_carlo(&state, 0, 100);
     let r_zero_steps = sim.run_monte_carlo(&state, 100, 0);
@@ -732,7 +732,7 @@ fn test_mc_var_le_cvar() {
     let sim   = MonteCarloSimulator::new(MonteCarloSimConfig {
         shock_probability: 0.05,
         ..fast_sim_config(22)
-    });
+    }).unwrap();
     let r = sim.run_monte_carlo(&state, 500, 100);
 
     assert!(
@@ -856,7 +856,7 @@ fn test_mc_integration_full_pipeline() {
         position_fraction:    0.05,
         seed:                 Some(999),
     };
-    let sim = MonteCarloSimulator::new(cfg);
+    let sim = MonteCarloSimulator::new(cfg).unwrap();
     let r   = sim.run_monte_carlo(&state, 200, 100);
 
     // Basic sanity checks.

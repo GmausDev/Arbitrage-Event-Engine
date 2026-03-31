@@ -63,11 +63,11 @@ pub struct PerformanceAnalytics {
 }
 
 impl PerformanceAnalytics {
-    pub fn new(config: AnalyticsConfig, bus: EventBus) -> Self {
+    pub fn new(config: AnalyticsConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid AnalyticsConfig: {e}");
+            return Err(anyhow::anyhow!("invalid AnalyticsConfig: {e}"));
         }
-        Self {
+        Ok(Self {
             config,
             history:      VecDeque::new(),
             price_cache:  HashMap::new(),
@@ -77,7 +77,7 @@ impl PerformanceAnalytics {
             max_drawdown: 0.0,
             edge_metrics: EdgeMetrics::new(),
             bus,
-        }
+        })
     }
 
     // ── Pure core ─────────────────────────────────────────────────────────────

@@ -69,17 +69,17 @@ pub struct MetaStrategyEngine {
 }
 
 impl MetaStrategyEngine {
-    pub fn new(config: MetaStrategyConfig, bus: EventBus) -> Self {
+    pub fn new(config: MetaStrategyConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid MetaStrategyConfig: {e}");
+            return Err(anyhow::anyhow!("invalid MetaStrategyConfig: {e}"));
         }
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     /// Clone the shared state handle for external inspection.

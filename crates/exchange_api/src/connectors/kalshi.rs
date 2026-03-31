@@ -18,15 +18,54 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::RwLock;
+use std::future::Future;
+use parking_lot::RwLock;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::{
+    config::ConnectorConfig,
     error::ExchangeError,
     types::*,
     ExchangeConnector,
 };
+
+// ── Retry helper ────────────────────────────────────────────────────────────
+
+async fn retry_request<F, Fut, T>(
+    max_retries: u32,
+    base_delay_ms: u64,
+    mut f: F,
+) -> Result<T, ExchangeError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, ExchangeError>>,
+{
+    for attempt in 0..=max_retries {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(ExchangeError::RateLimited { retry_after_ms }) => {
+                if attempt < max_retries {
+                    tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+                    continue;
+                }
+                return Err(ExchangeError::RateLimited { retry_after_ms });
+            }
+            Err(ExchangeError::Network(msg)) => {
+                if attempt < max_retries {
+                    let delay = base_delay_ms
+                        .saturating_mul(1u64.checked_shl(attempt).unwrap_or(u64::MAX))
+                        .min(30_000);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    continue;
+                }
+                return Err(ExchangeError::Network(msg));
+            }
+            Err(e) => return Err(e), // Non-transient errors fail immediately
+        }
+    }
+    Err(ExchangeError::Unavailable("retry loop exhausted".into()))
+}
 
 // ── API request/response types ───────────────────────────────────────────────
 
@@ -163,19 +202,17 @@ pub struct KalshiConnector {
     /// Cached session token (refreshed on 401).
     session_token: RwLock<Option<String>>,
     member_id: RwLock<Option<String>>,
+    fee_rate: f64,
+    min_order_usd: f64,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl KalshiConnector {
-    const DEFAULT_BASE_URL: &'static str = "https://trading-api.kalshi.com/trade-api/v2";
-    /// Kalshi charges a fee on profitable settlements only — modeled as ~2%
-    /// of expected win (7% settlement fee on binary markets with typical edge).
-    const FEE_RATE: f64 = 0.02;
-    /// Minimum order is 1 contract ($1).
-    const MIN_ORDER_USD: f64 = 1.0;
     /// Each Kalshi contract pays $1 on resolution.
     const DOLLARS_PER_CONTRACT: f64 = 1.0;
 
-    pub fn new(credentials: ExchangeCredentials) -> Result<Self, ExchangeError> {
+    pub fn new(credentials: ExchangeCredentials, config: ConnectorConfig) -> Result<Self, ExchangeError> {
         credentials.require_key()?;
         credentials.require_secret()?;
 
@@ -187,10 +224,14 @@ impl KalshiConnector {
 
         Ok(Self {
             client,
-            base_url: Self::DEFAULT_BASE_URL.to_string(),
+            base_url: config.base_url,
             credentials,
             session_token: RwLock::new(None),
             member_id: RwLock::new(None),
+            fee_rate: config.fee_rate,
+            min_order_usd: config.min_order_usd,
+            max_retries: config.max_retries,
+            retry_base_delay_ms: config.retry_base_delay_ms,
         })
     }
 
@@ -222,12 +263,8 @@ impl KalshiConnector {
         info!("kalshi: authenticated as member {}", login.member_id);
 
         // Cache token.
-        if let Ok(mut t) = self.session_token.write() {
-            *t = Some(login.token.clone());
-        }
-        if let Ok(mut m) = self.member_id.write() {
-            *m = Some(login.member_id);
-        }
+        *self.session_token.write() = Some(login.token.clone());
+        *self.member_id.write() = Some(login.member_id);
 
         Ok(login.token)
     }
@@ -235,10 +272,9 @@ impl KalshiConnector {
     /// Get the current session token, logging in if needed.
     async fn get_token(&self) -> Result<String, ExchangeError> {
         {
-            if let Ok(guard) = self.session_token.read() {
-                if let Some(ref token) = *guard {
-                    return Ok(token.clone());
-                }
+            let guard = self.session_token.read();
+            if let Some(ref token) = *guard {
+                return Ok(token.clone());
             }
         }
         self.login().await
@@ -261,6 +297,16 @@ impl KalshiConnector {
         }
 
         Ok(resp)
+    }
+
+    /// Parse Retry-After header value (in seconds) into milliseconds, with fallback.
+    fn parse_retry_after(resp: &reqwest::Response) -> u64 {
+        resp.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|secs| secs * 1000)
+            .unwrap_or(1000)
     }
 
     fn parse_order_status(status: &str) -> OrderStatus {
@@ -309,13 +355,13 @@ impl ExchangeConnector for KalshiConnector {
 
     async fn get_positions(&self) -> Result<Vec<ExchangePosition>, ExchangeError> {
         let member_id = {
-            self.member_id.read().ok().and_then(|g| g.clone())
+            self.member_id.read().clone()
         };
         let member_id = match member_id {
             Some(id) => id,
             None => {
                 self.login().await?;
-                self.member_id.read().ok().and_then(|g| g.clone())
+                self.member_id.read().clone()
                     .ok_or_else(|| ExchangeError::AuthFailed("no member_id after login".into()))?
             }
         };
@@ -344,7 +390,10 @@ impl ExchangeConnector for KalshiConnector {
     }
 
     async fn place_order(&self, req: &OrderRequest) -> Result<OrderId, ExchangeError> {
-        let token = self.get_token().await?;
+        let client = &self.client;
+        let base_url = &self.base_url;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
 
         let side_str = match req.side {
             OrderSide::BuyYes => "yes",
@@ -381,168 +430,267 @@ impl ExchangeConnector for KalshiConnector {
             yes_price:  Some(price_cents),
             action:     None,
         };
+        let payload_json = serde_json::to_value(&payload)
+            .map_err(|e| ExchangeError::ParseError(format!("failed to serialize order: {e}")))?;
 
-        let url = format!("{}/portfolio/orders", self.base_url);
-        let resp = self.client
-            .post(&url)
-            .bearer_auth(&token)
-            .json(&payload)
-            .send()
-            .await?;
+        retry_request(max_retries, base_delay, || {
+            let payload_json = payload_json.clone();
+            let url = format!("{}/portfolio/orders", base_url);
+            async move {
+                let token = self.get_token().await?;
+                let resp = client
+                    .post(&url)
+                    .bearer_auth(&token)
+                    .json(&payload_json)
+                    .send()
+                    .await?;
 
-        if resp.status() == 429 {
-            return Err(ExchangeError::RateLimited { retry_after_ms: 1000 });
-        }
-        if resp.status() == 401 || resp.status() == 403 {
-            return Err(ExchangeError::AuthFailed("Kalshi API authentication failed".into()));
-        }
+                if resp.status() == 429 {
+                    let retry_ms = Self::parse_retry_after(&resp);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
+                if resp.status() == 401 || resp.status() == 403 {
+                    return Err(ExchangeError::AuthFailed("Kalshi API authentication failed".into()));
+                }
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(ExchangeError::OrderRejected(
-                format!("HTTP {status}: {body}"),
-            ));
-        }
+                let status = resp.status();
+                if !status.is_success() {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(ExchangeError::OrderRejected(
+                        format!("HTTP {status}: {body}"),
+                    ));
+                }
 
-        let body: KalshiOrderResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("order response parse error: {e}"))
-        })?;
+                let body: KalshiOrderResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("order response parse error: {e}"))
+                })?;
 
-        debug!(order_id = %body.order.order_id, "kalshi: order placed");
-        metrics::counter!("exchange_orders_placed_total", "exchange" => "kalshi").increment(1);
-        Ok(OrderId(body.order.order_id))
+                debug!(order_id = %body.order.order_id, "kalshi: order placed");
+                metrics::counter!("exchange_orders_placed_total", "exchange" => "kalshi").increment(1);
+                Ok(OrderId(body.order.order_id))
+            }
+        }).await
     }
 
     async fn cancel_order(&self, order_id: &OrderId) -> Result<CancelResult, ExchangeError> {
-        let token = self.get_token().await?;
-        let url = format!("{}/portfolio/orders/{}", self.base_url, order_id.0);
+        let client = &self.client;
+        let base_url = &self.base_url;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let oid = order_id.clone();
 
-        let resp = self.client
-            .delete(&url)
-            .bearer_auth(&token)
-            .send()
-            .await?;
+        retry_request(max_retries, base_delay, || {
+            let oid_inner = oid.clone();
+            let url = format!("{}/portfolio/orders/{}", base_url, oid_inner.0);
+            async move {
+                let token = self.get_token().await?;
+                let resp = client
+                    .delete(&url)
+                    .bearer_auth(&token)
+                    .send()
+                    .await?;
 
-        let success = resp.status().is_success();
-        Ok(CancelResult {
-            order_id: order_id.clone(),
-            success,
-            filled_before_cancel_usd: 0.0,
-        })
+                if resp.status() == 429 {
+                    let retry_ms = Self::parse_retry_after(&resp);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
+
+                let success = resp.status().is_success();
+                Ok(CancelResult {
+                    order_id: oid_inner,
+                    success,
+                    filled_before_cancel_usd: 0.0,
+                })
+            }
+        }).await
     }
 
     async fn get_order_status(&self, order_id: &OrderId) -> Result<ExchangeOrder, ExchangeError> {
-        let url = format!("{}/portfolio/orders/{}", self.base_url, order_id.0);
-        let resp = self.auth_get(&url).await?;
+        let base_url = &self.base_url;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let oid = order_id.clone();
 
-        if resp.status() == 404 {
-            return Err(ExchangeError::NotFound(format!("order {} not found", order_id)));
-        }
+        retry_request(max_retries, base_delay, || {
+            let oid_inner = oid.0.clone();
+            let url = format!("{}/portfolio/orders/{}", base_url, oid_inner);
+            async move {
+                let resp = self.auth_get(&url).await?;
 
-        let body: KalshiOrderResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("order status parse error: {e}"))
-        })?;
+                if resp.status() == 429 {
+                    let retry_ms = Self::parse_retry_after(&resp);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
 
-        let o = body.order;
-        let filled_count = o.place_count - o.remaining_count;
-        let price_usd = o.yes_price as f64 / 100.0;
+                if resp.status() == 404 {
+                    return Err(ExchangeError::NotFound(format!("order {} not found", oid_inner)));
+                }
 
-        Ok(ExchangeOrder {
-            order_id:           OrderId(o.order_id),
-            market_id:          o.ticker,
-            side:               Self::parse_side(&o.side),
-            order_type:         if o.order_type == "market" { OrderType::Market } else { OrderType::Limit },
-            status:             Self::parse_order_status(&o.status),
-            requested_size_usd: o.place_count as f64 * price_usd,
-            filled_size_usd:    filled_count as f64 * price_usd,
-            avg_fill_price:     if filled_count > 0 { Some(price_usd) } else { None },
-            limit_price:        Some(price_usd),
-            created_at:         Utc::now(),
-            updated_at:         Utc::now(),
-        })
+                let body: KalshiOrderResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("order status parse error: {e}"))
+                })?;
+
+                let o = body.order;
+                let filled_count = (o.place_count - o.remaining_count).max(0);
+                let price_usd = o.yes_price as f64 / 100.0;
+
+                Ok(ExchangeOrder {
+                    order_id:           OrderId(o.order_id),
+                    market_id:          o.ticker,
+                    side:               Self::parse_side(&o.side),
+                    order_type:         if o.order_type == "market" { OrderType::Market } else { OrderType::Limit },
+                    status:             Self::parse_order_status(&o.status),
+                    requested_size_usd: o.place_count as f64 * price_usd,
+                    filled_size_usd:    filled_count as f64 * price_usd,
+                    avg_fill_price:     if filled_count > 0 { Some(price_usd) } else { None },
+                    limit_price:        Some(price_usd),
+                    created_at:         o.created_time.as_deref()
+                                            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                                            .map(|dt| dt.with_timezone(&Utc))
+                                            .unwrap_or_else(|| {
+                                                warn!("kalshi: failed to parse created_time, using now()");
+                                                Utc::now()
+                                            }),
+                    updated_at:         Utc::now(),
+                })
+            }
+        }).await
     }
 
     async fn get_open_orders(&self) -> Result<Vec<ExchangeOrder>, ExchangeError> {
-        let url = format!("{}/portfolio/orders?status=resting", self.base_url);
-        let resp = self.auth_get(&url).await?;
+        let base_url = &self.base_url;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
 
-        let body: KalshiOrdersResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("open orders parse error: {e}"))
-        })?;
+        retry_request(max_retries, base_delay, || {
+            let url = format!("{}/portfolio/orders?status=resting", base_url);
+            async move {
+                let resp = self.auth_get(&url).await?;
 
-        Ok(body.orders.into_iter().map(|o| {
-            let filled_count = o.place_count - o.remaining_count;
-            let price_usd = o.yes_price as f64 / 100.0;
-            ExchangeOrder {
-                order_id:           OrderId(o.order_id),
-                market_id:          o.ticker,
-                side:               Self::parse_side(&o.side),
-                order_type:         if o.order_type == "market" { OrderType::Market } else { OrderType::Limit },
-                status:             Self::parse_order_status(&o.status),
-                requested_size_usd: o.place_count as f64 * price_usd,
-                filled_size_usd:    filled_count as f64 * price_usd,
-                avg_fill_price:     if filled_count > 0 { Some(price_usd) } else { None },
-                limit_price:        Some(price_usd),
-                created_at:         Utc::now(),
-                updated_at:         Utc::now(),
+                if resp.status() == 429 {
+                    let retry_ms = Self::parse_retry_after(&resp);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
+
+                let body: KalshiOrdersResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("open orders parse error: {e}"))
+                })?;
+
+                Ok(body.orders.into_iter().map(|o| {
+                    let filled_count = (o.place_count - o.remaining_count).max(0);
+                    let price_usd = o.yes_price as f64 / 100.0;
+                    ExchangeOrder {
+                        order_id:           OrderId(o.order_id),
+                        market_id:          o.ticker,
+                        side:               Self::parse_side(&o.side),
+                        order_type:         if o.order_type == "market" { OrderType::Market } else { OrderType::Limit },
+                        status:             Self::parse_order_status(&o.status),
+                        requested_size_usd: o.place_count as f64 * price_usd,
+                        filled_size_usd:    filled_count as f64 * price_usd,
+                        avg_fill_price:     if filled_count > 0 { Some(price_usd) } else { None },
+                        limit_price:        Some(price_usd),
+                        created_at:         o.created_time.as_deref()
+                                                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                                                .map(|dt| dt.with_timezone(&Utc))
+                                                .unwrap_or_else(|| {
+                                                    warn!("kalshi: failed to parse created_time, using now()");
+                                                    Utc::now()
+                                                }),
+                        updated_at:         Utc::now(),
+                    }
+                }).collect())
             }
-        }).collect())
+        }).await
     }
 
     async fn get_order_book(&self, market_id: &str) -> Result<ExchangeOrderBook, ExchangeError> {
-        let url = format!("{}/orderbook/{}", self.base_url, market_id);
-        let resp = self.auth_get(&url).await?;
+        let base_url = &self.base_url;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let market = market_id.to_string();
 
-        let body: KalshiOrderBookResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("order book parse error: {e}"))
-        })?;
+        retry_request(max_retries, base_delay, || {
+            let url = format!("{}/orderbook/{}", base_url, market);
+            let market = market.clone();
+            async move {
+                let resp = self.auth_get(&url).await?;
 
-        let parse_levels = |levels: Vec<Vec<serde_json::Value>>| -> Vec<OrderBookLevel> {
-            levels.into_iter().filter_map(|pair| {
-                let price = pair.first()?.as_f64()? / 100.0; // cents → probability
-                let size = pair.get(1)?.as_f64()?;
-                Some(OrderBookLevel { price, size_usd: size })
-            }).collect()
-        };
+                if resp.status() == 429 {
+                    let retry_ms = Self::parse_retry_after(&resp);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
 
-        // Kalshi: `yes` bids are our bids, `no` bids map to asks on the YES side.
-        let bids = parse_levels(body.orderbook.yes);
-        let asks = parse_levels(body.orderbook.no);
+                let body: KalshiOrderBookResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("order book parse error: {e}"))
+                })?;
 
-        Ok(ExchangeOrderBook {
-            market_id: market_id.to_string(),
-            bids,
-            asks,
-            timestamp: Utc::now(),
-        })
+                let parse_levels = |levels: Vec<Vec<serde_json::Value>>| -> Vec<OrderBookLevel> {
+                    levels.into_iter().filter_map(|pair| {
+                        let price = pair.first()?.as_f64()? / 100.0; // cents → probability
+                        let size = pair.get(1)?.as_f64()?;
+                        Some(OrderBookLevel { price, size_usd: size })
+                    }).collect()
+                };
+
+                // Kalshi: `yes` bids are our bids, `no` bids map to asks on the YES side.
+                let bids = parse_levels(body.orderbook.yes);
+                let asks = parse_levels(body.orderbook.no);
+
+                Ok(ExchangeOrderBook {
+                    market_id: market,
+                    bids,
+                    asks,
+                    timestamp: Utc::now(),
+                })
+            }
+        }).await
     }
 
     async fn get_recent_fills(&self, market_id: &str, limit: usize) -> Result<Vec<ExchangeFill>, ExchangeError> {
-        let url = format!("{}/portfolio/fills?ticker={}&limit={}", self.base_url, market_id, limit);
-        let resp = self.auth_get(&url).await?;
+        let base_url = &self.base_url;
+        let max_retries = self.max_retries;
+        let base_delay = self.retry_base_delay_ms;
+        let market = market_id.to_string();
 
-        let body: KalshiFillsResponse = resp.json().await.map_err(|e| {
-            ExchangeError::ParseError(format!("fills parse error: {e}"))
-        })?;
+        retry_request(max_retries, base_delay, || {
+            let url = format!("{}/portfolio/fills?ticker={}&limit={}", base_url, market, limit);
+            async move {
+                let resp = self.auth_get(&url).await?;
 
-        Ok(body.fills.into_iter().map(|f| {
-            ExchangeFill {
-                market_id: f.ticker,
-                price:     f.yes_price as f64 / 100.0,
-                size_usd:  f.count as f64 * (f.yes_price as f64 / 100.0),
-                side:      Self::parse_side(&f.side),
-                timestamp: Utc::now(),
+                if resp.status() == 429 {
+                    let retry_ms = Self::parse_retry_after(&resp);
+                    return Err(ExchangeError::RateLimited { retry_after_ms: retry_ms });
+                }
+
+                let body: KalshiFillsResponse = resp.json().await.map_err(|e| {
+                    ExchangeError::ParseError(format!("fills parse error: {e}"))
+                })?;
+
+                Ok(body.fills.into_iter().map(|f| {
+                    ExchangeFill {
+                        market_id: f.ticker,
+                        price:     f.yes_price as f64 / 100.0,
+                        size_usd:  f.count as f64 * (f.yes_price as f64 / 100.0),
+                        side:      Self::parse_side(&f.side),
+                        timestamp: f.created_time.as_deref()
+                                       .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                                       .map(|dt| dt.with_timezone(&Utc))
+                                       .unwrap_or_else(|| {
+                                           warn!("kalshi: failed to parse fill created_time, using now()");
+                                           Utc::now()
+                                       }),
+                    }
+                }).collect())
             }
-        }).collect())
+        }).await
     }
 
     fn fee_rate(&self) -> f64 {
-        Self::FEE_RATE
+        self.fee_rate
     }
 
     fn min_order_size_usd(&self) -> f64 {
-        Self::MIN_ORDER_USD
+        self.min_order_usd
     }
 }
 
@@ -575,5 +723,15 @@ mod tests {
         assert_eq!(KalshiConnector::parse_order_status("resting"), OrderStatus::Open);
         assert_eq!(KalshiConnector::parse_order_status("executed"), OrderStatus::Filled);
         assert_eq!(KalshiConnector::parse_order_status("canceled"), OrderStatus::Cancelled);
+    }
+
+    #[test]
+    fn config_defaults() {
+        let cfg = ConnectorConfig::kalshi_defaults();
+        assert_eq!(cfg.base_url, "https://trading-api.kalshi.com/trade-api/v2");
+        assert!((cfg.fee_rate - 0.02).abs() < f64::EPSILON);
+        assert!((cfg.min_order_usd - 1.0).abs() < f64::EPSILON);
+        assert_eq!(cfg.max_retries, 3);
+        assert_eq!(cfg.retry_base_delay_ms, 250);
     }
 }

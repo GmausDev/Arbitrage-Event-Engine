@@ -429,7 +429,7 @@ async fn ingestion_engine_starts_and_cancels_cleanly() {
     cfg.social.poll_interval_ms = 30;
     cfg.economic.poll_interval_ms = 30;
 
-    let engine = DataIngestionEngine::new(cfg, bus.clone());
+    let engine = DataIngestionEngine::new(cfg, bus.clone()).unwrap();
 
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move { engine.run(cancel_clone).await });
@@ -456,7 +456,7 @@ async fn ingestion_engine_publishes_events_during_run() {
     cfg.economic.poll_interval_ms = 20;
     cfg.calendar.poll_interval_ms = 20;
 
-    let engine = DataIngestionEngine::new(cfg, bus.clone());
+    let engine = DataIngestionEngine::new(cfg, bus.clone()).unwrap();
     let cancel_clone = cancel.clone();
     tokio::spawn(async move { engine.run(cancel_clone).await });
 
@@ -499,7 +499,7 @@ async fn ingestion_engine_cache_populated_after_run() {
     cfg.news.poll_interval_ms = 20;
     cfg.economic.poll_interval_ms = 20;
 
-    let engine = DataIngestionEngine::new(cfg, bus.clone());
+    let engine = DataIngestionEngine::new(cfg, bus.clone()).unwrap();
     let cache = engine.cache.clone();
 
     let cancel_clone = cancel.clone();
@@ -532,7 +532,7 @@ async fn disabled_connector_produces_no_events() {
     cfg.economic.enabled = false;
     cfg.calendar.enabled = false;
 
-    let engine = DataIngestionEngine::new(cfg, bus.clone());
+    let engine = DataIngestionEngine::new(cfg, bus.clone()).unwrap();
     let cancel_clone = cancel.clone();
     tokio::spawn(async move { engine.run(cancel_clone).await });
 

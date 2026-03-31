@@ -7,6 +7,7 @@
 // consumes this trait to route `ApprovedTrade` events to real exchanges
 // (or to the existing `execution_sim` in paper-trading mode).
 
+pub mod config;
 pub mod connectors;
 pub mod error;
 pub mod types;

@@ -67,19 +67,18 @@ pub struct SimulationEngine {
 impl SimulationEngine {
     /// Create and validate a new `SimulationEngine`.
     ///
-    /// # Panics
-    /// Panics if `config.validate()` fails (invalid field values).
-    pub fn new(config: SimulationConfig, bus: EventBus) -> Self {
+    /// Returns `Err` if `config.validate()` fails (invalid field values).
+    pub fn new(config: SimulationConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid SimulationConfig: {e}");
+            return Err(anyhow::anyhow!("invalid SimulationConfig: {e}"));
         }
         let initial_capital = config.initial_capital;
-        Self {
+        Ok(Self {
             config,
             bus,
             results: Vec::new(),
             metrics: SimMetricsCollector::with_initial_capital(initial_capital),
-        }
+        })
     }
 
     // ── Public simulation API ─────────────────────────────────────────────────

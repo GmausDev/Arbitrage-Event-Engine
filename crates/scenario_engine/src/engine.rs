@@ -97,17 +97,17 @@ pub struct ScenarioEngine {
 }
 
 impl ScenarioEngine {
-    pub fn new(config: ScenarioEngineConfig, bus: EventBus) -> Self {
+    pub fn new(config: ScenarioEngineConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid ScenarioEngineConfig: {e}");
+            return Err(anyhow::anyhow!("invalid ScenarioEngineConfig: {e}"));
         }
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     /// Clone the shared state handle for external inspection.
@@ -296,7 +296,13 @@ impl ScenarioEngine {
         // async runtime is not starved during CPU-intensive computation.
         let result = tokio::task::spawn_blocking(move || {
             let market_count = snapshot.beliefs.len();
-            let batch = sample_scenarios(&snapshot.beliefs, &snapshot.dependencies, sample_size);
+            let batch = match sample_scenarios(&snapshot.beliefs, &snapshot.dependencies, sample_size) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("scenario_engine: sample_scenarios failed: {e}");
+                    return None;
+                }
+            };
             let gen_ms = batch.generation_time_ms;
             let actual_sample_size = batch.sample_size;
 
@@ -309,19 +315,20 @@ impl ScenarioEngine {
                 threshold,
             );
 
-            BatchResult {
+            Some(BatchResult {
                 market_count,
                 sample_size: actual_sample_size,
                 generation_time_ms: gen_ms,
                 expected_probabilities: expectation.expected_probabilities,
                 joint_probabilities: joint_map,
                 signals,
-            }
+            })
         })
         .await;
 
         let result = match result {
-            Ok(r) => r,
+            Ok(Some(r)) => r,
+            Ok(None) => return,
             Err(e) => {
                 warn!("scenario_engine: batch generation panicked: {e}");
                 return;

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::time::Duration;
 
-use super::{RawMarket, RawOrderBook, RawTrade};
+use super::{fetch_with_retry, RawMarket, RawOrderBook, RawTrade};
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -60,6 +60,9 @@ struct PolymarketGammaMarket {
 
 pub struct PolymarketIngestionConnector {
     client: reqwest::Client,
+    base_url: String,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl PolymarketIngestionConnector {
@@ -68,7 +71,20 @@ impl PolymarketIngestionConnector {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("prediction-market-bot/1.0")
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://gamma-api.polymarket.com".into(),
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(timeout_ms: u64, base_url: String, max_retries: u32, retry_base_delay_ms: u64) -> anyhow::Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .user_agent("prediction-market-bot/1.0")
+            .build()?;
+        Ok(Self { client, base_url, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -76,7 +92,12 @@ impl Default for PolymarketIngestionConnector {
     fn default() -> Self {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "PolymarketIngestionConnector: failed to build HTTP client, using no-op fallback");
-            Self { client: reqwest::Client::new() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: "https://gamma-api.polymarket.com".into(),
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -88,12 +109,21 @@ impl MarketConnector for PolymarketIngestionConnector {
     }
 
     async fn fetch_markets(&self) -> Result<Vec<RawMarket>> {
-        let url = "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=volume24hr&ascending=false";
+        let url = format!(
+            "{}/markets?active=true&closed=false&limit=100&order=volume24hr&ascending=false",
+            self.base_url
+        );
 
-        let resp = match self.client.get(url).send().await {
+        let client = &self.client;
+        let resp = match fetch_with_retry(
+            || client.get(&url),
+            self.max_retries,
+            self.retry_base_delay_ms,
+            "polymarket",
+        ).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(connector = "polymarket", err = %e, "HTTP request failed");
+                tracing::warn!(connector = "polymarket", err = %e, "HTTP request failed after retries");
                 return Ok(vec![]);
             }
         };
@@ -233,6 +263,9 @@ struct KalshiMarket {
 
 pub struct KalshiIngestionConnector {
     client: reqwest::Client,
+    base_url: String,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl KalshiIngestionConnector {
@@ -241,7 +274,20 @@ impl KalshiIngestionConnector {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("prediction-market-bot/1.0")
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://api.elections.kalshi.com".into(),
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(timeout_ms: u64, base_url: String, max_retries: u32, retry_base_delay_ms: u64) -> anyhow::Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .user_agent("prediction-market-bot/1.0")
+            .build()?;
+        Ok(Self { client, base_url, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -249,7 +295,12 @@ impl Default for KalshiIngestionConnector {
     fn default() -> Self {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "KalshiIngestionConnector: failed to build HTTP client, using no-op fallback");
-            Self { client: reqwest::Client::new() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: "https://api.elections.kalshi.com".into(),
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -261,14 +312,18 @@ impl MarketConnector for KalshiIngestionConnector {
     }
 
     async fn fetch_markets(&self) -> Result<Vec<RawMarket>> {
-        // elections.kalshi.com is the publicly accessible endpoint (no auth required).
-        // trading-api.kalshi.com requires OAuth and returns 401 without credentials.
-        let url = "https://api.elections.kalshi.com/trade-api/v2/markets?limit=100";
+        let url = format!("{}/trade-api/v2/markets?limit=100", self.base_url);
 
-        let resp = match self.client.get(url).send().await {
+        let client = &self.client;
+        let resp = match fetch_with_retry(
+            || client.get(&url),
+            self.max_retries,
+            self.retry_base_delay_ms,
+            "kalshi",
+        ).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(connector = "kalshi", err = %e, "HTTP request failed");
+                tracing::warn!(connector = "kalshi", err = %e, "HTTP request failed after retries");
                 return Ok(vec![]);
             }
         };

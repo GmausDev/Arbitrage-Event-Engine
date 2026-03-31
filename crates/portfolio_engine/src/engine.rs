@@ -52,18 +52,18 @@ pub struct PortfolioEngine {
 }
 
 impl PortfolioEngine {
-    pub fn new(config: PortfolioConfig, bus: EventBus) -> Self {
+    pub fn new(config: PortfolioConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid PortfolioConfig: {e}");
+            return Err(anyhow::anyhow!("invalid PortfolioConfig: {e}"));
         }
         let state = PortfolioState::new(config.initial_bankroll);
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: Arc::new(tokio::sync::RwLock::new(state)),
             bus,
             rx,
-        }
+        })
     }
 
     // ── Pure core logic ───────────────────────────────────────────────────────

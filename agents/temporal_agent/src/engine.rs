@@ -51,17 +51,17 @@ pub struct TemporalAgent {
 }
 
 impl TemporalAgent {
-    pub fn new(config: TemporalConfig, bus: EventBus) -> Self {
+    pub fn new(config: TemporalConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid TemporalConfig: {e}");
+            return Err(anyhow::anyhow!("invalid TemporalConfig: {e}"));
         }
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     pub fn state(&self) -> SharedTemporalState {

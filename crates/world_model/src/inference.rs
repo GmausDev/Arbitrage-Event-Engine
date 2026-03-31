@@ -20,6 +20,7 @@ use std::collections::{HashSet, VecDeque};
 
 use chrono::Utc;
 
+use crate::error::WorldModelError;
 use crate::types::{InfluencePropagation, WorldInferenceResult, WorldState};
 
 // ---------------------------------------------------------------------------
@@ -78,7 +79,15 @@ pub fn propagate_update(
     max_hops: usize,
     damping: f64,
     threshold: f64,
-) {
+) -> Result<(), WorldModelError> {
+    // Validate probability values are in [0.0, 1.0].
+    if !(0.0..=1.0).contains(&old_prob) {
+        return Err(WorldModelError::InvalidProbability(old_prob));
+    }
+    if !(0.0..=1.0).contains(&new_prob) {
+        return Err(WorldModelError::InvalidProbability(new_prob));
+    }
+
     let delta_lo = prob_to_log_odds(new_prob) - prob_to_log_odds(old_prob);
 
     // Record the source market as updated (even if delta is zero, the caller
@@ -89,13 +98,23 @@ pub fn propagate_update(
 
     // No meaningful change — nothing to propagate.
     if delta_lo.abs() < threshold {
-        return;
+        return Ok(());
     }
 
     // Snapshot dependencies to avoid simultaneous mutable/immutable borrow
     // on WorldState while the BFS mutates variables.
     // For typical world-model sizes (tens to hundreds of edges) this clone
     // is cheap and avoids unsafe split-borrow gymnastics.
+    // Validate dependency weights and confidences before propagation.
+    for dep in &state.dependencies {
+        if !(-1.0..=1.0).contains(&dep.weight) {
+            return Err(WorldModelError::InvalidWeight(dep.weight));
+        }
+        if !(0.0..=1.0).contains(&dep.confidence) {
+            return Err(WorldModelError::InvalidConfidence(dep.confidence));
+        }
+    }
+
     let deps: Vec<(String, String, f64, f64)> = state
         .dependencies
         .iter()
@@ -154,4 +173,6 @@ pub fn propagate_update(
             queue.push_back((to.clone(), child_delta, hop + 1));
         }
     }
+
+    Ok(())
 }

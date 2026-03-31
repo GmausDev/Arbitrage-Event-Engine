@@ -50,17 +50,17 @@ pub struct BayesianEdgeAgent {
 }
 
 impl BayesianEdgeAgent {
-    pub fn new(config: BayesianEdgeConfig, bus: EventBus) -> Self {
+    pub fn new(config: BayesianEdgeConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid BayesianEdgeConfig: {e}");
+            return Err(anyhow::anyhow!("invalid BayesianEdgeConfig: {e}"));
         }
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     pub fn state(&self) -> SharedBayesianEdgeState {

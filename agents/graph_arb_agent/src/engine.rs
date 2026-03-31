@@ -51,17 +51,17 @@ pub struct GraphArbAgent {
 }
 
 impl GraphArbAgent {
-    pub fn new(config: GraphArbConfig, bus: EventBus) -> Self {
+    pub fn new(config: GraphArbConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid GraphArbConfig: {e}");
+            return Err(anyhow::anyhow!("invalid GraphArbConfig: {e}"));
         }
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             state: new_shared_state(),
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     pub fn state(&self) -> SharedGraphArbState {
