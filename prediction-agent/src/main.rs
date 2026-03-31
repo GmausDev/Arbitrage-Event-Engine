@@ -48,6 +48,10 @@ use data_ingestion::{DataIngestionEngine, IngestionConfig};
 // ── Order Management System (live trading) ───────────────────────────────────
 use oms::{OrderManager, manager::OmsConfig};
 
+// ── Persistence layer ────────────────────────────────────────────────────────
+use persistence::{Database, EventRecorder, AccountReconciler};
+use cost_model::config::CostModelConfig;
+
 // ── Control panel ─────────────────────────────────────────────────────────────
 use control_panel::{AppState as ControlPanelState, ControlPanelServer};
 
@@ -231,6 +235,40 @@ async fn main() -> Result<()> {
         oms
     };
 
+    // ── 5c. Persistence layer ─────────────────────────────────────────────
+    //
+    // SQLite database for trade history, equity snapshots, and audit trail.
+    // EventRecorder subscribes to the bus and auto-persists events.
+    // AccountReconciler periodically checks exchange balances.
+    let db_path = std::env::var("PERSISTENCE_DB_PATH")
+        .unwrap_or_else(|_| "data/arbitrage.db".into());
+    let db = Arc::new(Database::open(&db_path).expect("failed to open persistence database"));
+    info!("persistence: database opened at {db_path}");
+
+    let cost_config = CostModelConfig::default();
+    let event_recorder = Arc::new(EventRecorder::new(
+        db.clone(),
+        cost_config,
+        config.paper_bankroll,
+    ));
+
+    let mut reconciler = AccountReconciler::new(db.clone(), 300); // every 5 minutes
+    // Register the same exchange connectors used by the OMS for reconciliation.
+    if live_trading {
+        if std::env::var("POLYMARKET_API_KEY").is_ok() {
+            let creds = exchange_api::ExchangeCredentials::from_env("POLYMARKET");
+            if let Ok(c) = exchange_api::connectors::polymarket::PolymarketConnector::new(creds) {
+                reconciler = reconciler.with_exchange(Arc::new(c));
+            }
+        }
+        if std::env::var("KALSHI_API_KEY").is_ok() {
+            let creds = exchange_api::ExchangeCredentials::from_env("KALSHI");
+            if let Ok(c) = exchange_api::connectors::kalshi::KalshiConnector::new(creds) {
+                reconciler = reconciler.with_exchange(Arc::new(c));
+            }
+        }
+    }
+
     // ── 6. Agents ───────────────────────────────────────────────────────────
 
     // market_scanner — polls Polymarket + Kalshi APIs every tick, publishes
@@ -374,6 +412,13 @@ async fn main() -> Result<()> {
     let h_calibration    = tokio::spawn(calibration_eng.run(cancel.child_token()));
     let h_oms            = tokio::spawn(oms.run(cancel.child_token()));
 
+    // Persistence tasks
+    let recorder_bus = bus.clone();
+    let recorder = event_recorder.clone();
+    let h_recorder = tokio::spawn(async move { recorder.run(&recorder_bus).await });
+    let oms_balances = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let h_reconciler = tokio::spawn(reconciler.run(oms_balances));
+
     // ── 9. Await shutdown ───────────────────────────────────────────────────
     info!("prediction-agent: all tasks running — press Ctrl-C to stop");
     tokio::signal::ctrl_c().await?;
@@ -390,6 +435,7 @@ async fn main() -> Result<()> {
         h_rel_disc, h_strategy_res, h_data_ingestion,
         h_priority_eng, h_port_opt, h_port_eng, h_analytics,
         h_calibration, h_oms, h_control_panel,
+        h_recorder, h_reconciler,
     ));
 
     Ok(())
