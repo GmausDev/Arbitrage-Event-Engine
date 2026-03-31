@@ -68,6 +68,68 @@ pub struct IngestionConfig {
     pub cache_max_news_items: usize,
     /// Maximum number of `SocialTrend` topics to retain in the snapshot cache.
     pub cache_max_trend_items: usize,
+
+    // ── Per-connector base URLs ──────────────────────────────────────────
+    /// Polymarket Gamma API base URL.
+    #[serde(default = "default_polymarket_base_url")]
+    pub polymarket_base_url: String,
+    /// Kalshi elections API base URL.
+    #[serde(default = "default_kalshi_base_url")]
+    pub kalshi_base_url: String,
+    /// NewsAPI.org base URL.
+    #[serde(default = "default_newsapi_base_url")]
+    pub newsapi_base_url: String,
+    /// AlphaVantage API base URL.
+    #[serde(default = "default_alphavantage_base_url")]
+    pub alphavantage_base_url: String,
+    /// Reddit base URL.
+    #[serde(default = "default_reddit_base_url")]
+    pub reddit_base_url: String,
+    /// Twitter API base URL.
+    #[serde(default = "default_twitter_base_url")]
+    pub twitter_base_url: String,
+    /// FRED API base URL.
+    #[serde(default = "default_fred_base_url")]
+    pub fred_base_url: String,
+    /// TradingEconomics API base URL.
+    #[serde(default = "default_tradingeconomics_base_url")]
+    pub tradingeconomics_base_url: String,
+
+    // ── Externalized hardcoded lists ─────────────────────────────────────
+    /// Reddit subreddits to poll (was hardcoded REDDIT_SUBREDDITS constant).
+    #[serde(default = "default_reddit_subreddits")]
+    pub reddit_subreddits: Vec<String>,
+    /// FRED economic series IDs to poll (was hardcoded FRED_SERIES constant).
+    #[serde(default = "default_fred_series")]
+    pub fred_series: Vec<String>,
+}
+
+fn default_polymarket_base_url() -> String { "https://gamma-api.polymarket.com".into() }
+fn default_kalshi_base_url() -> String { "https://api.elections.kalshi.com".into() }
+fn default_newsapi_base_url() -> String { "https://newsapi.org".into() }
+fn default_alphavantage_base_url() -> String { "https://www.alphavantage.co".into() }
+fn default_reddit_base_url() -> String { "https://www.reddit.com".into() }
+fn default_twitter_base_url() -> String { "https://api.twitter.com".into() }
+fn default_fred_base_url() -> String { "https://api.stlouisfed.org".into() }
+fn default_tradingeconomics_base_url() -> String { "https://api.tradingeconomics.com".into() }
+
+fn default_reddit_subreddits() -> Vec<String> {
+    vec![
+        "PredictionMarkets".into(),
+        "politics".into(),
+        "Economics".into(),
+        "investing".into(),
+    ]
+}
+
+fn default_fred_series() -> Vec<String> {
+    vec![
+        "CPIAUCSL".into(),
+        "PAYEMS".into(),
+        "FEDFUNDS".into(),
+        "UNRATE".into(),
+        "GDP".into(),
+    ]
 }
 
 impl Default for IngestionConfig {
@@ -102,6 +164,16 @@ impl Default for IngestionConfig {
             stream_max_retries: 5,
             cache_max_news_items: 200,
             cache_max_trend_items: 50,
+            polymarket_base_url: default_polymarket_base_url(),
+            kalshi_base_url: default_kalshi_base_url(),
+            newsapi_base_url: default_newsapi_base_url(),
+            alphavantage_base_url: default_alphavantage_base_url(),
+            reddit_base_url: default_reddit_base_url(),
+            twitter_base_url: default_twitter_base_url(),
+            fred_base_url: default_fred_base_url(),
+            tradingeconomics_base_url: default_tradingeconomics_base_url(),
+            reddit_subreddits: default_reddit_subreddits(),
+            fred_series: default_fred_series(),
         }
     }
 }

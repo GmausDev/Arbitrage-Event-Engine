@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 common      = { path = "../../crates/common" }
+anyhow      = { workspace = true }
 chrono      = { workspace = true }
 serde       = { workspace = true }
 thiserror   = { workspace = true }

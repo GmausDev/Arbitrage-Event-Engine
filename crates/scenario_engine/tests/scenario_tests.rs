@@ -44,7 +44,7 @@ fn make_bus() -> EventBus {
 #[test]
 fn scenario_generation_produces_valid_outcomes() {
     let b = beliefs(&[("A", 0.3), ("B", 0.7), ("C", 0.5)]);
-    let batch = sample_scenarios(&b, &[], 500);
+    let batch = sample_scenarios(&b, &[], 500).unwrap();
 
     assert_eq!(batch.sample_size, 500);
     assert_eq!(batch.scenarios.len(), 500);
@@ -66,7 +66,7 @@ fn scenario_generation_produces_valid_outcomes() {
 #[test]
 fn expectations_converge_to_probabilities() {
     let b = beliefs(&[("X", 0.2), ("Y", 0.5), ("Z", 0.8)]);
-    let batch = sample_scenarios(&b, &[], 10_000);
+    let batch = sample_scenarios(&b, &[], 10_000).unwrap();
     let exp = compute_expectations(&batch);
 
     for (market_id, &true_prob) in &b {
@@ -86,7 +86,7 @@ fn expectations_converge_to_probabilities() {
 fn joint_probabilities_are_correct_for_independent_markets() {
     // For independent markets: P(A∧B) ≈ P(A)·P(B)
     let b = beliefs(&[("A", 0.6), ("B", 0.4)]);
-    let batch = sample_scenarios(&b, &[], 10_000);
+    let batch = sample_scenarios(&b, &[], 10_000).unwrap();
     let exp = compute_expectations(&batch);
 
     let pa = exp.expected_probabilities["A"];
@@ -114,7 +114,7 @@ fn joint_probabilities_are_correct_for_independent_markets() {
 fn joint_probabilities_respect_certain_market() {
     // If A is certain (prob=1), P(A∧B) = P(B).
     let b = beliefs(&[("A", 1.0), ("B", 0.5)]);
-    let batch = sample_scenarios(&b, &[], 5_000);
+    let batch = sample_scenarios(&b, &[], 5_000).unwrap();
     let exp = compute_expectations(&batch);
 
     let pb = exp.expected_probabilities["B"];
@@ -127,7 +127,7 @@ fn joint_probabilities_respect_certain_market() {
 fn canonical_joint_pairs_stored_only_once() {
     // Canonical storage: only (A,B) where A < B; (B,A) not stored directly.
     let b = beliefs(&[("A", 0.5), ("B", 0.5)]);
-    let batch = sample_scenarios(&b, &[], 500);
+    let batch = sample_scenarios(&b, &[], 500).unwrap();
     let exp = compute_expectations(&batch);
 
     // Exactly 1 canonical pair for 2 markets.
@@ -203,7 +203,7 @@ fn large_batch_is_stable() {
         DependencyEdge { parent: "C".into(), child: "D".into(), weight: -0.2 },
     ];
 
-    let batch = sample_scenarios(&b, &deps, 10_000);
+    let batch = sample_scenarios(&b, &deps, 10_000).unwrap();
     assert_eq!(batch.scenarios.len(), 10_000);
 
     let exp = compute_expectations(&batch);
@@ -228,7 +228,7 @@ fn positive_dependency_raises_child_joint_probability() {
         weight: 0.5,
     }];
 
-    let batch = sample_scenarios(&b, &deps, 5_000);
+    let batch = sample_scenarios(&b, &deps, 5_000).unwrap();
     let exp = compute_expectations(&batch);
 
     let child_freq = exp.expected_probabilities["CHILD"];
@@ -247,7 +247,7 @@ fn negative_dependency_lowers_child_probability() {
         weight: -0.5,
     }];
 
-    let batch = sample_scenarios(&b, &deps, 5_000);
+    let batch = sample_scenarios(&b, &deps, 5_000).unwrap();
     let exp = compute_expectations(&batch);
 
     let child_freq = exp.expected_probabilities["CHILD"];
@@ -268,7 +268,7 @@ async fn engine_no_memory_growth_on_repeated_updates() {
         sample_size: 100,
         ..Default::default()
     };
-    let engine = ScenarioEngine::new(config, bus.clone());
+    let engine = ScenarioEngine::new(config, bus.clone()).unwrap();
     let state = engine.state();
 
     let cancel = CancellationToken::new();
@@ -335,7 +335,7 @@ async fn engine_publishes_batch_and_expectations_on_world_update() {
         min_mispricing_threshold: 0.01,
         ..Default::default()
     };
-    let engine = ScenarioEngine::new(config, bus.clone());
+    let engine = ScenarioEngine::new(config, bus.clone()).unwrap();
 
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
@@ -392,7 +392,7 @@ async fn engine_emits_scenario_signal_for_mispricing() {
         min_mispricing_threshold: 0.10, // 10% threshold
         ..Default::default()
     };
-    let engine = ScenarioEngine::new(config, bus.clone());
+    let engine = ScenarioEngine::new(config, bus.clone()).unwrap();
     let state = engine.state();
 
     let cancel = CancellationToken::new();

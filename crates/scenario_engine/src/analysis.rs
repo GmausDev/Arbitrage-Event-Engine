@@ -193,7 +193,7 @@ mod tests {
     fn expectations_converge_to_probabilities() {
         // With 10k samples, expected freq should be within 3% of the true prob.
         let b = beliefs(&[("A", 0.7), ("B", 0.3), ("C", 0.5)]);
-        let batch = sample_scenarios(&b, &[], 10_000);
+        let batch = sample_scenarios(&b, &[], 10_000).unwrap();
         let exp = compute_expectations(&batch);
 
         for (id, &true_prob) in &b {
@@ -209,7 +209,7 @@ mod tests {
     fn joint_probability_independent_markets() {
         // P(A∧B) ≈ P(A)·P(B) for independent markets.
         let b = beliefs(&[("A", 0.6), ("B", 0.4)]);
-        let batch = sample_scenarios(&b, &[], 10_000);
+        let batch = sample_scenarios(&b, &[], 10_000).unwrap();
         let exp = compute_expectations(&batch);
 
         let pa = exp.expected_probabilities["A"];
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn joint_prob_lookup_normalises_key_order() {
         let b = beliefs(&[("A", 0.5), ("B", 0.5)]);
-        let batch = sample_scenarios(&b, &[], 1_000);
+        let batch = sample_scenarios(&b, &[], 1_000).unwrap();
         let exp = compute_expectations(&batch);
 
         // Both orientations should return the same value.
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn top_joint_pairs_respects_limit() {
         let b = beliefs(&[("A", 0.5), ("B", 0.5), ("C", 0.5), ("D", 0.5)]);
-        let batch = sample_scenarios(&b, &[], 500);
+        let batch = sample_scenarios(&b, &[], 500).unwrap();
         let exp = compute_expectations(&batch);
 
         let top2 = top_joint_pairs(&exp, 2);
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn top_joint_pairs_zero_limit_returns_all() {
         let b = beliefs(&[("A", 0.5), ("B", 0.5), ("C", 0.5)]);
-        let batch = sample_scenarios(&b, &[], 500);
+        let batch = sample_scenarios(&b, &[], 500).unwrap();
         let exp = compute_expectations(&batch);
 
         // 3 markets → 3 canonical pairs.

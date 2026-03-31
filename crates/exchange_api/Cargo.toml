@@ -16,3 +16,4 @@ anyhow       = { workspace = true }
 thiserror    = { workspace = true }
 tracing      = { workspace = true }
 metrics      = { workspace = true }
+parking_lot  = { workspace = true }

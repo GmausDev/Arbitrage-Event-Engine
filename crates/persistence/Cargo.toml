@@ -16,3 +16,4 @@ anyhow       = { workspace = true }
 tracing      = { workspace = true }
 metrics      = { workspace = true }
 rusqlite     = { version = "0.32", features = ["bundled"] }
+parking_lot  = { workspace = true }

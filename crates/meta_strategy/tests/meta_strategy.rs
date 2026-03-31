@@ -115,7 +115,7 @@ async fn single_signal_emits_meta_signal() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = MetaStrategyEngine::new(test_config(), bus.clone());
+    let engine = MetaStrategyEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -139,7 +139,7 @@ async fn buy_wins_over_conflicting_sell() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = MetaStrategyEngine::new(test_config(), bus.clone());
+    let engine = MetaStrategyEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -167,7 +167,7 @@ async fn sell_wins_over_conflicting_buy() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = MetaStrategyEngine::new(test_config(), bus.clone());
+    let engine = MetaStrategyEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -199,7 +199,7 @@ async fn shock_boosts_weak_signal_above_threshold() {
         min_strategies: 2,
         ..test_config()
     };
-    let engine = MetaStrategyEngine::new(cfg, bus.clone());
+    let engine = MetaStrategyEngine::new(cfg, bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -243,7 +243,7 @@ async fn independent_markets_do_not_interfere() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = MetaStrategyEngine::new(test_config(), bus.clone());
+    let engine = MetaStrategyEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -271,7 +271,7 @@ async fn event_counters_accurate() {
     let bus = EventBus::new();
     let cancel = CancellationToken::new();
 
-    let engine = MetaStrategyEngine::new(test_config(), bus.clone());
+    let engine = MetaStrategyEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -298,7 +298,7 @@ async fn meta_signals_have_correct_raev_ordering() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = MetaStrategyEngine::new(test_config(), bus.clone());
+    let engine = MetaStrategyEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -338,7 +338,7 @@ async fn meta_signal_published_to_bus() {
     let mut any_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = MetaStrategyEngine::new(test_config(), bus.clone());
+    let engine = MetaStrategyEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 

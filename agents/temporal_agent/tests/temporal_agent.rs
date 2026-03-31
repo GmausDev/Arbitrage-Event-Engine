@@ -111,7 +111,7 @@ async fn no_signal_with_insufficient_history() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = TemporalAgent::new(test_config(), bus.clone());
+    let agent = TemporalAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -135,7 +135,7 @@ async fn buy_signal_on_large_upward_breakout() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = TemporalAgent::new(test_config(), bus.clone());
+    let agent = TemporalAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -164,7 +164,7 @@ async fn sell_signal_on_large_downward_break() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = TemporalAgent::new(test_config(), bus.clone());
+    let agent = TemporalAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -193,7 +193,7 @@ async fn no_signal_on_stable_prices() {
         trend_z_threshold: 2.0,
         ..test_config()
     };
-    let agent = TemporalAgent::new(cfg, bus.clone());
+    let agent = TemporalAgent::new(cfg, bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -216,7 +216,7 @@ async fn independent_histories_per_market() {
     let mut verify_rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let agent = TemporalAgent::new(test_config(), bus.clone());
+    let agent = TemporalAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 
@@ -243,7 +243,7 @@ async fn event_counters_accurate() {
     let bus = EventBus::new();
     let cancel = CancellationToken::new();
 
-    let agent = TemporalAgent::new(test_config(), bus.clone());
+    let agent = TemporalAgent::new(test_config(), bus.clone()).unwrap();
     let state = agent.state();
     tokio::spawn(agent.run(cancel.child_token()));
 

@@ -9,6 +9,74 @@ pub mod news_connectors;
 pub mod social_connectors;
 
 use chrono::{DateTime, Utc};
+use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Retry helper — exponential backoff for transient HTTP failures
+// ---------------------------------------------------------------------------
+
+/// Execute an async HTTP request with exponential backoff retry.
+///
+/// Retries on:
+///   - Network / connection errors (reqwest::Error where `is_connect()`, `is_timeout()`, `is_request()`)
+///   - HTTP 429 Too Many Requests
+///   - HTTP 5xx server errors
+///
+/// Does NOT retry on:
+///   - Successful responses (2xx, 3xx)
+///   - Client errors (4xx) other than 429
+pub(crate) async fn fetch_with_retry(
+    request_builder_fn: impl Fn() -> reqwest::RequestBuilder,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
+    connector_name: &str,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut attempt = 0u32;
+    loop {
+        let result = request_builder_fn().send().await;
+        match result {
+            Ok(resp) => {
+                let status = resp.status();
+                // Retry on 429 or 5xx
+                if (status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error())
+                    && attempt < max_retries
+                {
+                    tracing::warn!(
+                        connector = connector_name,
+                        attempt = attempt + 1,
+                        max_retries = max_retries,
+                        status = %status,
+                        "retryable HTTP status, backing off"
+                    );
+                    let delay = retry_base_delay_ms.saturating_mul(1u64 << attempt);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Ok(resp);
+            }
+            Err(e) => {
+                // Retry on transient network errors
+                let is_transient = e.is_connect() || e.is_timeout() || e.is_request();
+                if is_transient && attempt < max_retries {
+                    tracing::warn!(
+                        connector = connector_name,
+                        attempt = attempt + 1,
+                        max_retries = max_retries,
+                        err = %e,
+                        "transient HTTP error, backing off"
+                    );
+                    let delay = retry_base_delay_ms.saturating_mul(1u64 << attempt);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Raw market data (pre-normalisation)

@@ -56,15 +56,17 @@ pub struct SignalPriorityEngine {
 }
 
 impl SignalPriorityEngine {
-    pub fn new(config: PriorityConfig, bus: EventBus) -> Self {
-        config.validate().expect("PriorityConfig is invalid");
+    pub fn new(config: PriorityConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
+        config
+            .validate()
+            .map_err(|e| anyhow::anyhow!("invalid PriorityConfig: {e}"))?;
         let rx = bus.subscribe();
-        Self {
+        Ok(Self {
             config,
             bus,
             rx: Some(rx),
             queue: Vec::new(),
-        }
+        })
     }
 
     // ── Classification ─────────────────────────────────────────────────────────

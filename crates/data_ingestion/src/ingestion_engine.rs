@@ -308,13 +308,15 @@ pub struct DataIngestionEngine {
 }
 
 impl DataIngestionEngine {
-    pub fn new(config: IngestionConfig, bus: EventBus) -> Self {
-        config.validate().expect("IngestionConfig is invalid");
+    pub fn new(config: IngestionConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
+        config
+            .validate()
+            .map_err(|e| anyhow::anyhow!("invalid IngestionConfig: {e}"))?;
         let cache = Arc::new(RwLock::new(SnapshotCache::new(
             config.cache_max_news_items,
             config.cache_max_trend_items,
         )));
-        Self { config, cache, bus }
+        Ok(Self { config, cache, bus })
     }
 
     pub async fn run(self, cancel: CancellationToken) {
@@ -332,16 +334,24 @@ impl DataIngestionEngine {
 
         // ── Market connector polling ──────────────────────────────────────
         if self.config.market.enabled {
-            let poly = PolymarketIngestionConnector::new(self.config.market.timeout_ms)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("polymarket client init failed: {e}");
-                    PolymarketIngestionConnector::default()
-                });
-            let kalshi = KalshiIngestionConnector::new(self.config.market.timeout_ms)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("kalshi client init failed: {e}");
-                    KalshiIngestionConnector::default()
-                });
+            let poly = PolymarketIngestionConnector::with_config(
+                self.config.market.timeout_ms,
+                self.config.polymarket_base_url.clone(),
+                self.config.market.max_retries,
+                self.config.market.retry_base_delay_ms,
+            ).unwrap_or_else(|e| {
+                tracing::warn!("polymarket client init failed: {e}");
+                PolymarketIngestionConnector::default()
+            });
+            let kalshi = KalshiIngestionConnector::with_config(
+                self.config.market.timeout_ms,
+                self.config.kalshi_base_url.clone(),
+                self.config.market.max_retries,
+                self.config.market.retry_base_delay_ms,
+            ).unwrap_or_else(|e| {
+                tracing::warn!("kalshi client init failed: {e}");
+                KalshiIngestionConnector::default()
+            });
 
             // Register streaming URLs if available
             for (name, url) in [("polymarket_ws", poly.stream_url()), ("kalshi_ws", kalshi.stream_url())] {
@@ -373,10 +383,18 @@ impl DataIngestionEngine {
 
         // ── News connector polling ────────────────────────────────────────
         if self.config.news.enabled {
-            let news_api = NewsApiConnector::new(self.config.news.timeout_ms)
-                .unwrap_or_default();
-            let av_news = AlphaVantageNewsConnector::new(self.config.news.timeout_ms)
-                .unwrap_or_default();
+            let news_api = NewsApiConnector::with_config(
+                self.config.news.timeout_ms,
+                self.config.newsapi_base_url.clone(),
+                self.config.news.max_retries,
+                self.config.news.retry_base_delay_ms,
+            ).unwrap_or_default();
+            let av_news = AlphaVantageNewsConnector::with_config(
+                self.config.news.timeout_ms,
+                self.config.alphavantage_base_url.clone(),
+                self.config.news.max_retries,
+                self.config.news.retry_base_delay_ms,
+            ).unwrap_or_default();
             polling.add_task(PollerTask {
                 name: "news".into(),
                 poll_interval: Duration::from_millis(self.config.news.poll_interval_ms),
@@ -392,13 +410,22 @@ impl DataIngestionEngine {
 
         // ── Social connector polling ──────────────────────────────────────
         if self.config.social.enabled {
-            let reddit = RedditConnector::new(self.config.social.timeout_ms)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("reddit client init failed: {e}");
-                    RedditConnector::default()
-                });
-            let twitter = TwitterConnector::new(self.config.social.timeout_ms)
-                .unwrap_or_default();
+            let reddit = RedditConnector::with_config(
+                self.config.social.timeout_ms,
+                self.config.reddit_base_url.clone(),
+                self.config.reddit_subreddits.clone(),
+                self.config.social.max_retries,
+                self.config.social.retry_base_delay_ms,
+            ).unwrap_or_else(|e| {
+                tracing::warn!("reddit client init failed: {e}");
+                RedditConnector::default()
+            });
+            let twitter = TwitterConnector::with_config(
+                self.config.social.timeout_ms,
+                self.config.twitter_base_url.clone(),
+                self.config.social.max_retries,
+                self.config.social.retry_base_delay_ms,
+            ).unwrap_or_default();
             polling.add_task(PollerTask {
                 name: "social".into(),
                 poll_interval: Duration::from_millis(self.config.social.poll_interval_ms),
@@ -414,10 +441,19 @@ impl DataIngestionEngine {
 
         // ── Economic + calendar connector polling ─────────────────────────
         if self.config.economic.enabled || self.config.calendar.enabled {
-            let fred = FREDConnector::new(self.config.economic.timeout_ms)
-                .unwrap_or_default();
-            let te = TradingEconomicsConnector::new(self.config.economic.timeout_ms)
-                .unwrap_or_default();
+            let fred = FREDConnector::with_config(
+                self.config.economic.timeout_ms,
+                self.config.fred_base_url.clone(),
+                self.config.fred_series.clone(),
+                self.config.economic.max_retries,
+                self.config.economic.retry_base_delay_ms,
+            ).unwrap_or_default();
+            let te = TradingEconomicsConnector::with_config(
+                self.config.economic.timeout_ms,
+                self.config.tradingeconomics_base_url.clone(),
+                self.config.economic.max_retries,
+                self.config.economic.retry_base_delay_ms,
+            ).unwrap_or_default();
             polling.add_task(PollerTask {
                 name: "economic".into(),
                 poll_interval: Duration::from_millis(self.config.economic.poll_interval_ms),

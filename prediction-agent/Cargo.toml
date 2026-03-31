@@ -36,6 +36,8 @@ portfolio_engine         = { path = "../crates/portfolio_engine" }
 performance_analytics    = { path = "../crates/performance_analytics" }
 signal_priority_engine   = { path = "../crates/signal_priority_engine" }
 calibration              = { path = "../crates/calibration" }
+world_model              = { path = "../crates/world_model" }
+scenario_engine          = { path = "../crates/scenario_engine" }
 control-panel            = { path = "../control-panel" }
 
 # Execution layer (live trading)

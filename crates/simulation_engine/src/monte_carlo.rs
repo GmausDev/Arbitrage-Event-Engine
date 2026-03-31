@@ -260,7 +260,7 @@ impl MonteCarloSimConfig {
 /// # Example
 /// ```ignore
 /// let config = MonteCarloSimConfig::default();
-/// let sim    = MonteCarloSimulator::new(config);
+/// let sim    = MonteCarloSimulator::new(config)?;
 /// let state  = SimulationState::from_market_specs(&specs, 10_000.0);
 /// let result = sim.run_monte_carlo(&state, 1_000, 100);
 /// ```
@@ -272,13 +272,13 @@ pub struct MonteCarloSimulator {
 impl MonteCarloSimulator {
     /// Create a new simulator.
     ///
-    /// # Panics
-    /// Panics if `config.validate()` fails.
-    pub fn new(config: MonteCarloSimConfig) -> Self {
+    /// # Errors
+    /// Returns an error if `config.validate()` fails.
+    pub fn new(config: MonteCarloSimConfig) -> Result<Self, anyhow::Error> {
         if let Err(e) = config.validate() {
-            panic!("invalid MonteCarloSimConfig: {e}");
+            return Err(anyhow::anyhow!("invalid MonteCarloSimConfig: {e}"));
         }
-        Self { config }
+        Ok(Self { config })
     }
 
     /// Run `num_simulations` independent Monte Carlo paths, each of

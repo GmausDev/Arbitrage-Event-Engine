@@ -6,7 +6,7 @@ use futures::future::join_all;
 use serde::Deserialize;
 use std::time::Duration;
 
-use super::RawSocialPost;
+use super::{fetch_with_retry, RawSocialPost};
 
 #[async_trait]
 pub trait SocialConnector: Send + Sync {
@@ -54,10 +54,12 @@ struct RedditPost {
 // Reddit connector
 // ---------------------------------------------------------------------------
 
-const REDDIT_SUBREDDITS: &[&str] = &["PredictionMarkets", "politics", "Economics", "investing"];
-
 pub struct RedditConnector {
     client: reqwest::Client,
+    base_url: String,
+    subreddits: Vec<String>,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl RedditConnector {
@@ -71,7 +73,35 @@ impl RedditConnector {
             .default_headers(headers)
             .timeout(Duration::from_millis(timeout_ms))
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://www.reddit.com".into(),
+            subreddits: vec![
+                "PredictionMarkets".into(), "politics".into(),
+                "Economics".into(), "investing".into(),
+            ],
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(
+        timeout_ms: u64,
+        base_url: String,
+        subreddits: Vec<String>,
+        max_retries: u32,
+        retry_base_delay_ms: u64,
+    ) -> anyhow::Result<Self> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            "prediction-market-bot/1.0".parse().unwrap(),
+        );
+        let client = reqwest::ClientBuilder::new()
+            .default_headers(headers)
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()?;
+        Ok(Self { client, base_url, subreddits, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -80,7 +110,16 @@ impl Default for RedditConnector {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "RedditConnector: failed to build HTTP client, using no-op fallback");
             let headers = reqwest::header::HeaderMap::new();
-            Self { client: reqwest::ClientBuilder::new().default_headers(headers).build().unwrap_or_default() }
+            Self {
+                client: reqwest::ClientBuilder::new().default_headers(headers).build().unwrap_or_default(),
+                base_url: "https://www.reddit.com".into(),
+                subreddits: vec![
+                    "PredictionMarkets".into(), "politics".into(),
+                    "Economics".into(), "investing".into(),
+                ],
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -92,15 +131,22 @@ impl SocialConnector for RedditConnector {
     }
 
     async fn stream_posts(&self) -> Result<Vec<RawSocialPost>> {
-        // Fetch all subreddits concurrently.
-        let futs = REDDIT_SUBREDDITS.iter().map(|sub| {
-            let url = format!("https://www.reddit.com/r/{sub}/hot.json?limit=25");
+        let futs = self.subreddits.iter().map(|sub| {
+            let url = format!("{}/r/{}/hot.json?limit=25", self.base_url, sub);
             let client = self.client.clone();
+            let max_retries = self.max_retries;
+            let retry_base_delay_ms = self.retry_base_delay_ms;
+            let sub = sub.clone();
             async move {
-                let resp = match client.get(&url).send().await {
+                let resp = match fetch_with_retry(
+                    || client.get(&url),
+                    max_retries,
+                    retry_base_delay_ms,
+                    "reddit",
+                ).await {
                     Ok(r) => r,
                     Err(e) => {
-                        tracing::warn!(connector = "reddit", subreddit = sub, err = %e, "fetch failed");
+                        tracing::warn!(connector = "reddit", subreddit = %sub, err = %e, "fetch failed after retries");
                         return None;
                     }
                 };
@@ -108,7 +154,7 @@ impl SocialConnector for RedditConnector {
                 if !resp.status().is_success() {
                     tracing::warn!(
                         connector = "reddit",
-                        subreddit = sub,
+                        subreddit = %sub,
                         status = %resp.status(),
                         "HTTP error response"
                     );
@@ -118,7 +164,7 @@ impl SocialConnector for RedditConnector {
                 let raw: RedditResponse = match resp.json().await {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::warn!(connector = "reddit", subreddit = sub, err = %e, "failed to parse response");
+                        tracing::warn!(connector = "reddit", subreddit = %sub, err = %e, "failed to parse response");
                         return None;
                     }
                 };
@@ -202,6 +248,9 @@ struct TweetMetrics {
 
 pub struct TwitterConnector {
     client: reqwest::Client,
+    base_url: String,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl TwitterConnector {
@@ -210,7 +259,20 @@ impl TwitterConnector {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("prediction-market-bot/1.0")
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://api.twitter.com".into(),
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(timeout_ms: u64, base_url: String, max_retries: u32, retry_base_delay_ms: u64) -> anyhow::Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .user_agent("prediction-market-bot/1.0")
+            .build()?;
+        Ok(Self { client, base_url, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -218,7 +280,12 @@ impl Default for TwitterConnector {
     fn default() -> Self {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "TwitterConnector: failed to build HTTP client, using no-op fallback");
-            Self { client: reqwest::Client::new() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: "https://api.twitter.com".into(),
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -238,18 +305,22 @@ impl SocialConnector for TwitterConnector {
             }
         };
 
-        let url = "https://api.twitter.com/2/tweets/search/recent?query=prediction+market+economy+politics&max_results=100&tweet.fields=created_at,public_metrics";
+        let url = format!(
+            "{}/2/tweets/search/recent?query=prediction+market+economy+politics&max_results=100&tweet.fields=created_at,public_metrics",
+            self.base_url
+        );
 
-        let resp = match self
-            .client
-            .get(url)
-            .header("Authorization", format!("Bearer {token}"))
-            .send()
-            .await
-        {
+        let client = &self.client;
+        let auth_header = format!("Bearer {token}");
+        let resp = match fetch_with_retry(
+            || client.get(&url).header("Authorization", &auth_header),
+            self.max_retries,
+            self.retry_base_delay_ms,
+            "twitter",
+        ).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(connector = "twitter", err = %e, "HTTP request failed");
+                tracing::warn!(connector = "twitter", err = %e, "HTTP request failed after retries");
                 return Ok(vec![]);
             }
         };

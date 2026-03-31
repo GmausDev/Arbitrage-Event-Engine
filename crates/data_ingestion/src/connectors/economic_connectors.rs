@@ -7,7 +7,7 @@ use futures::future::join_all;
 use serde::Deserialize;
 use std::time::Duration;
 
-use super::RawEconomicData;
+use super::{fetch_with_retry, RawEconomicData};
 
 #[async_trait]
 pub trait EconomicConnector: Send + Sync {
@@ -35,10 +35,12 @@ struct FredObservation {
 // FRED connector
 // ---------------------------------------------------------------------------
 
-const FRED_SERIES: &[&str] = &["CPIAUCSL", "PAYEMS", "FEDFUNDS", "UNRATE", "GDP"];
-
 pub struct FREDConnector {
     client: reqwest::Client,
+    base_url: String,
+    series: Vec<String>,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl FREDConnector {
@@ -47,7 +49,30 @@ impl FREDConnector {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("prediction-market-bot/1.0")
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://api.stlouisfed.org".into(),
+            series: vec![
+                "CPIAUCSL".into(), "PAYEMS".into(), "FEDFUNDS".into(),
+                "UNRATE".into(), "GDP".into(),
+            ],
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(
+        timeout_ms: u64,
+        base_url: String,
+        series: Vec<String>,
+        max_retries: u32,
+        retry_base_delay_ms: u64,
+    ) -> anyhow::Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .user_agent("prediction-market-bot/1.0")
+            .build()?;
+        Ok(Self { client, base_url, series, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -55,7 +80,16 @@ impl Default for FREDConnector {
     fn default() -> Self {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "FREDConnector: failed to build HTTP client, using no-op fallback");
-            Self { client: reqwest::Client::new() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: "https://api.stlouisfed.org".into(),
+                series: vec![
+                    "CPIAUCSL".into(), "PAYEMS".into(), "FEDFUNDS".into(),
+                    "UNRATE".into(), "GDP".into(),
+                ],
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -75,16 +109,16 @@ impl EconomicConnector for FREDConnector {
             }
         };
 
-        // Fetch all series concurrently to reduce total latency.
-        let fetch_tasks = FRED_SERIES.iter().map(|series_id| {
+        let fetch_tasks = self.series.iter().map(|series_id| {
             let client = self.client.clone();
             let key = key.clone();
-            let series_id = series_id.to_string();
+            let series_id = series_id.clone();
+            let base_url = self.base_url.clone();
+            let max_retries = self.max_retries;
+            let retry_base_delay_ms = self.retry_base_delay_ms;
             async move {
-                // Build URL with query params via reqwest::Url to keep the
-                // API key out of format-string logs and proxy access logs.
                 let url = match reqwest::Url::parse_with_params(
-                    "https://api.stlouisfed.org/fred/series/observations",
+                    &format!("{}/fred/series/observations", base_url),
                     &[
                         ("series_id",  series_id.as_str()),
                         ("api_key",    key.as_str()),
@@ -100,10 +134,16 @@ impl EconomicConnector for FREDConnector {
                     }
                 };
 
-                let resp = match client.get(url).send().await {
+                let url_str = url.to_string();
+                let resp = match fetch_with_retry(
+                    || client.get(&url_str),
+                    max_retries,
+                    retry_base_delay_ms,
+                    "fred",
+                ).await {
                     Ok(r) => r,
                     Err(e) => {
-                        tracing::warn!(connector = "fred", series = %series_id, err = %e, "fetch failed");
+                        tracing::warn!(connector = "fred", series = %series_id, err = %e, "fetch failed after retries");
                         return None;
                     }
                 };
@@ -170,6 +210,9 @@ struct TradingEconomicsEvent {
 
 pub struct TradingEconomicsConnector {
     client: reqwest::Client,
+    base_url: String,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl TradingEconomicsConnector {
@@ -178,7 +221,20 @@ impl TradingEconomicsConnector {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("prediction-market-bot/1.0")
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://api.tradingeconomics.com".into(),
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(timeout_ms: u64, base_url: String, max_retries: u32, retry_base_delay_ms: u64) -> anyhow::Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .user_agent("prediction-market-bot/1.0")
+            .build()?;
+        Ok(Self { client, base_url, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -186,7 +242,12 @@ impl Default for TradingEconomicsConnector {
     fn default() -> Self {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "TradingEconomicsConnector: failed to build HTTP client, using no-op fallback");
-            Self { client: reqwest::Client::new() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: "https://api.tradingeconomics.com".into(),
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -211,17 +272,22 @@ impl EconomicConnector for TradingEconomicsConnector {
             .format("%Y-%m-%d")
             .to_string();
 
-        // Build URL with query params via reqwest::Url to keep the API key
-        // out of format-string logs and proxy access logs.
         let url = reqwest::Url::parse_with_params(
-            "https://api.tradingeconomics.com/calendar",
+            &format!("{}/calendar", self.base_url),
             &[("c", key.as_str()), ("d1", today.as_str()), ("d2", next_week.as_str())],
         ).map_err(|e| anyhow::anyhow!("bad URL: {e}"))?;
 
-        let resp = match self.client.get(url).send().await {
+        let client = &self.client;
+        let url_str = url.to_string();
+        let resp = match fetch_with_retry(
+            || client.get(&url_str),
+            self.max_retries,
+            self.retry_base_delay_ms,
+            "trading_economics",
+        ).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(connector = "trading_economics", err = %e, "HTTP request failed");
+                tracing::warn!(connector = "trading_economics", err = %e, "HTTP request failed after retries");
                 return Ok(vec![]);
             }
         };

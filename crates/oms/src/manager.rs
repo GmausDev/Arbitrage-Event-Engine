@@ -134,7 +134,7 @@ impl OrderManager {
         // Register in OMS state.
         let oms_id = {
             let mut state = self.state.write().await;
-            state.insert_order(order_request.clone(), exchange_name)
+            state.insert_order(order_request.clone(), exchange_name, trade.direction)
         };
 
         if !self.config.live_trading_enabled {
@@ -279,7 +279,7 @@ impl OrderManager {
                             order_snapshot.map(|order| ExecutionResult {
                                 trade: ApprovedTrade {
                                     market_id:         order.request.market_id.clone(),
-                                    direction:         common::TradeDirection::Buy,
+                                    direction:         order.direction,
                                     approved_fraction: order.request.size_usd / self.config.bankroll,
                                     expected_value:    0.0,
                                     posterior_prob:     0.0,

@@ -1,10 +1,10 @@
 # Arbitrage Event Engine
 
-A modular, event-driven prediction market trading system written in Rust. The bot exploits pricing inefficiencies on [Polymarket](https://polymarket.com) and [Kalshi](https://kalshi.com) using Bayesian probability updates, market graph analysis, multi-agent signal fusion, and a **net-edge cost model** — **all in simulated paper trading with no real order execution**.
+A modular, event-driven prediction market trading system written in Rust. The bot exploits pricing inefficiencies on [Polymarket](https://polymarket.com) and [Kalshi](https://kalshi.com) using Bayesian probability updates, market graph analysis, multi-agent signal fusion, and a **net-edge cost model**. Supports both **simulated paper trading** (`execution_sim`) and a **live execution layer** (`oms` with exchange connectors).
 
 ## Overview
 
-The system is a **Rust workspace** of **28 packages** (engines, agents, dashboard, test harnesses). Components communicate only through a shared **`EventBus`** (tokio broadcast channel). A **Mission Control** web stack (Axum + Next.js) provides live visibility into signals, portfolio state, market data, and strategy research.
+The system is a **Rust workspace** of **30 crates** (engines, agents, dashboard, test harnesses). Components communicate only through a shared **`EventBus`** (tokio broadcast channel). A **Mission Control** web stack (Axum + Next.js) provides live visibility into signals, portfolio state, market data, and strategy research.
 
 On startup, `prediction-agent` loads **`.env`** (via `dotenvy`) so API keys are available to connectors before any tasks spawn.
 
@@ -31,7 +31,7 @@ Target niches (config): crypto, politics, geopolitics, macro, sports.
 
 ### Production event flow (`prediction-agent`)
 
-The orchestrator **spawns** the components below. Crates such as **`world_model`** and **`scenario_engine`** exist in the workspace (types, tests) but are **not** currently wired into `prediction-agent`; their `Event::*` variants are reserved for future integration.
+The orchestrator **spawns** all components below, including **`world_model`** (probabilistic constraint propagation) and **`scenario_engine`** (Monte Carlo scenario generation).
 
 ```
 market_scanner ──→ Event::Market (Polymarket + Kalshi, every tick)
@@ -44,7 +44,8 @@ data_ingestion ──→ Event::Market / MarketSnapshot / NewsEvent / SocialTren
                         ├─→ market_graph     ──→ Event::Graph
                         │       └─→ bayesian_engine ──→ Event::Posterior
                         ├─→ shock_detector   ──→ Event::Shock
-                        └─→ (world_model / scenario_engine — not spawned in main binary)
+                        └─→ world_model ──→ Event::WorldProbability / WorldSignal / Inconsistency
+                                └─→ scenario_engine ──→ Event::ScenarioBatch / ScenarioSignal
 
 bayesian_engine  ──→ Event::Posterior
                         ├─→ signal_agent         ──→ Event::Signal
@@ -61,7 +62,8 @@ graph_arb_agent / temporal_agent / bayesian_edge_agent / signal_agent
 meta_strategy    ──→ Event::MetaSignal  (Mission Control / analytics)
 
 risk_engine      ──→ Event::ApprovedTrade (+ Event::TradeRejected when gated)
-                        └─→ execution_sim  ──→ Event::Execution
+                        ├─→ execution_sim  ──→ Event::Execution  (paper trading)
+                        └─→ oms            ──→ Event::Execution  (live/dry-run via exchange connectors)
                                 └─→ portfolio_engine ──→ Event::Portfolio
                                         ├─→ performance_analytics
                                         └─→ calibration ──→ Event::CalibrationUpdate
@@ -78,8 +80,8 @@ crates/
   common/                 # Event enum, EventBus, TradeSignal, shared wire types
   market_graph/           # petgraph + BFS probability propagation
   bayesian_engine/        # Log-odds posterior fusion (+ EconomicRelease path)
-  world_model/            # Global state + constraints (library; not in main binary)
-  scenario_engine/        # Monte Carlo scenarios (library; not in main binary)
+  world_model/            # Probabilistic constraint propagation + inconsistency detection
+  scenario_engine/        # Monte Carlo scenario generation + expectation analysis
   shock_detector/         # Shocks → Event::Shock
   meta_strategy/          # Multi-agent fusion → Event::MetaSignal
   strategy_research/      # Hypothesis gen, backtests, strategy registry
@@ -93,8 +95,10 @@ crates/
   calibration/            # Resolved-market calibration → Event::CalibrationUpdate
   simulation_engine/      # Live observer, historical replay, Monte Carlo helpers
   relationship_discovery/ # Correlation / relationship discovery
-  data_ingestion/         # External APIs, normalizers, snapshot cache, matcher
-  ...                     # (see Cargo.toml for full member list)
+  exchange_api/           # ExchangeConnector trait + Polymarket/Kalshi connectors (retry, config)
+  oms/                    # Order Management System — live/dry-run execution
+  persistence/            # SQLite trade history, equity curves, audit trail
+  data_ingestion/         # External APIs (with retry), normalizers, snapshot cache, matcher
 
 agents/
   market_scanner/         # Polymarket + Kalshi REST polling
@@ -196,18 +200,26 @@ npm run dev    # http://localhost:3000
 | `tick_interval_ms` | `1000` | Market scanner poll interval |
 | `paper_bankroll` | `10000` | Simulated USD capital (portfolio, execution, risk, optimizer, analytics) |
 | `bus_capacity` | `1024` | EventBus channel capacity |
+| `prometheus_bind_addr` | `0.0.0.0:9000` | Prometheus metrics exporter bind address |
+| `control_panel_bind_addr` | `0.0.0.0:3001` | Control panel HTTP server bind address |
 
-**Optional `.env` variables** (used by `data_ingestion` connectors when set):
+**Optional `.env` variables** (used by connectors when set):
 
 | Variable | Used for |
 |----------|----------|
+| `POLYMARKET_API_KEY` / `_SECRET` / `_PASSPHRASE` | Polymarket CLOB API (live trading) |
+| `KALSHI_API_KEY` / `_API_SECRET` | Kalshi Trading API (live trading) |
 | `NEWS_API_KEY` | NewsAPI.org |
 | `ALPHA_VANTAGE_KEY` | Alpha Vantage news/sentiment |
 | `FRED_API_KEY` | St. Louis Fed economic series |
 | `TRADING_ECONOMICS_KEY` | Trading Economics (if enabled) |
 | `TWITTER_BEARER_TOKEN` | X/Twitter API (if enabled) |
+| `CONTROL_PANEL_API_KEY` | Bearer token for dashboard auth |
+| `CONTROL_PANEL_AUTH_DISABLED` | Set `true` to explicitly disable auth (fail-closed otherwise) |
+| `LIVE_TRADING` | Set `true` to enable live order execution via OMS |
+| `PERSISTENCE_DB_PATH` | SQLite database path (default: `data/arbitrage.db`) |
 
-If a key is missing, the corresponding connector typically **skips** that source (warns in logs) rather than failing the whole process.
+If a data API key is missing, the corresponding connector **skips** that source (warns in logs) rather than failing. Exchange client failures are also non-fatal — the scanner continues with whatever sources succeed.
 
 ---
 
@@ -222,20 +234,26 @@ cargo run --bin integration_harness
 
 Integration tests use a real `EventBus`; subscribers are registered **before** spawning producers to avoid races.
 
-### Test coverage (representative)
+### Test coverage (~450+ tests)
 
-| Area | Crate(s) |
-|------|----------|
-| World / scenario | `world_model`, `scenario_engine` |
-| Meta / research | `meta_strategy`, `strategy_research` |
-| Agents | `graph_arb_agent`, `temporal_agent`, `bayesian_edge_agent`, `signal_agent` |
-| Data path | `data_ingestion`, `risk_engine`, `portfolio_engine`, … |
+| Area | Crate(s) | Tests |
+|------|----------|-------|
+| Core infrastructure | `common` (EventBus) | 6 |
+| Bayesian pipeline | `bayesian_engine`, `market_graph` | 34, 25 |
+| World / scenario | `world_model`, `scenario_engine` | 17, 25 |
+| Strategy agents | `signal_agent`, `graph_arb_agent`, `temporal_agent`, `bayesian_edge_agent` | 33, 23, 17, 19 |
+| Meta / research | `meta_strategy`, `strategy_research` | 18, 43 |
+| Signal routing | `signal_priority_engine` | 7 |
+| Calibration | `calibration` | 8 |
+| Execution | `oms` (with mock exchange), `simulation_engine` | 6, 47 |
+| Data path | `data_ingestion`, `cost_model`, `portfolio_engine`, `performance_analytics` | 19, 15, 10, 33 |
+| Other | `shock_detector`, `relationship_discovery`, `persistence` | 11, 20, 9 |
 
 ---
 
 ## Technology stack
 
-**Rust:** `tokio`, `axum 0.7`, `petgraph`, `serde`/`serde_json`, `reqwest`, `tokio-tungstenite`, `tracing`, `metrics` + `metrics-exporter-prometheus`, `chrono`, `ndarray`, `tokio-util`, `dotenvy`, `futures`, `async-trait`.
+**Rust:** `tokio`, `axum 0.7`, `petgraph`, `serde`/`serde_json`, `reqwest` (rustls), `tokio-tungstenite` (rustls), `tracing`, `metrics` + `metrics-exporter-prometheus`, `chrono`, `ndarray`, `tokio-util`, `dotenvy`, `futures`, `async-trait`, `parking_lot`, `anyhow`, `thiserror`.
 
 **Frontend:** Next.js 14, Recharts, SWR, Tailwind CSS, lucide-react.
 
@@ -244,12 +262,13 @@ Integration tests use a real `EventBus`; subscribers are registered **before** s
 ## Architecture patterns
 
 1. **`config.rs`** — typed config + `Default` + `validate()`
-2. **`new(config, bus)`** — validate at construction
+2. **`new(config, bus) -> Result<Self, anyhow::Error>`** — validate at construction, return `Result` (never panic)
 3. **`run(self, cancel: CancellationToken)`** — async loop with `tokio::select!` where applicable
 4. **Pure core** — mutate `&mut State` without holding locks across `.await`
 5. **Tests** — real `EventBus`; subscribe before spawn
+6. **Retry** — exchange and data connectors use exponential backoff with configurable `max_retries` and `retry_base_delay_ms`
 
-**Lock discipline:** write lock → mutate → snapshot → drop lock before I/O.
+**Lock discipline:** write lock → mutate → snapshot → drop lock before I/O. Uses `parking_lot::Mutex`/`RwLock` (no poisoning).
 
 ---
 
@@ -258,18 +277,27 @@ Integration tests use a real `EventBus`; subscribers are registered **before** s
 | Component | Status |
 |-----------|--------|
 | `common`, `market_graph`, `bayesian_engine` | Active in `prediction-agent` |
-| `data_ingestion` | Active; requires keys in `.env` for full external coverage |
+| `world_model`, `scenario_engine` | **Active** — probabilistic constraints + Monte Carlo scenarios |
+| `data_ingestion` | Active with retry logic; requires keys in `.env` for full external coverage |
 | `signal_priority_engine`, `portfolio_optimizer`, `risk_engine`, `cost_model` | Active; risk uses **net-edge** gating via `cost_model` |
-| `execution_sim`, `portfolio_engine`, `performance_analytics` | Active |
-| `calibration` | Active |
+| `execution_sim` | Active (paper trading) |
+| `oms` + `exchange_api` | Active (dry-run by default; set `LIVE_TRADING=true` for live execution). Retry with exponential backoff, configurable URLs/fees via `ConnectorConfig`. |
+| `portfolio_engine`, `performance_analytics`, `calibration` | Active |
+| `persistence` | Active — SQLite trade history, equity curves, audit trail (`parking_lot::Mutex`) |
 | `shock_detector`, strategy agents, `meta_strategy`, `strategy_research`, `relationship_discovery` | Active |
-| `simulation_engine` | Default **LiveObserver**; **Monte Carlo** / **HistoricalReplay** / helpers available via config — not a single “zeroed stub” anymore |
-| `world_model`, `scenario_engine` | **Crates complete; not spawned** by `prediction-agent` today |
-| `control-panel` + `control-panel-ui` | Active |
+| `simulation_engine` | Default **LiveObserver**; **Monte Carlo** / **HistoricalReplay** / helpers available via config |
+| `control-panel` + `control-panel-ui` | Active — fail-closed auth, metrics behind auth, constant-time token comparison |
 | `tests/cost_model_backtest` | Standalone Monte Carlo comparison for cost gating |
+
+### Security
+
+- **Auth**: Fail-closed — requires `CONTROL_PANEL_API_KEY` or explicit `CONTROL_PANEL_AUTH_DISABLED=true`. Returns 503 when unconfigured.
+- **Metrics**: `/api/metrics` is behind auth middleware; `/api/system/health` remains public for probes.
+- **Token comparison**: Constant-time to prevent timing attacks.
+- **Error handling**: All engine constructors return `Result` (no panics on bad config). Startup failures degrade gracefully where possible.
 
 ---
 
 ## Disclaimer
 
-This project is for **research and simulation**. It does **not** execute real trades. All orders are simulated in `execution_sim`. Real trading would require a compliant execution layer and adherence to exchange terms and regulations.
+This project supports both **simulation** and **live trading**. Paper trading via `execution_sim` is the default. Enabling live trading (`LIVE_TRADING=true`) executes real orders through exchange connectors. Use at your own risk and ensure compliance with exchange terms and regulations.

@@ -13,6 +13,7 @@ tracing    = { workspace = true }
 chrono     = { workspace = true }
 thiserror  = { workspace = true }
 metrics    = { workspace = true }
+anyhow     = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

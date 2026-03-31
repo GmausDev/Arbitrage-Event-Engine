@@ -2,8 +2,6 @@
 
 use thiserror::Error;
 
-// TODO: wire into validation in propagate_update and WorldState::add_dependency.
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum WorldModelError {
     #[error("market not found: {0}")]

@@ -2,8 +2,6 @@
 
 use thiserror::Error;
 
-// TODO: wire into validation in sample_scenarios and analysis functions.
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum ScenarioEngineError {
     #[error("empty belief state: cannot generate scenarios with no markets")]

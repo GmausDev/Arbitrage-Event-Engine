@@ -53,16 +53,18 @@ pub struct StrategyResearchEngine {
 }
 
 impl StrategyResearchEngine {
-    pub fn new(config: ResearchConfig, bus: EventBus) -> Self {
-        config.validate().expect("ResearchConfig is invalid");
+    pub fn new(config: ResearchConfig, bus: EventBus) -> Result<Self, anyhow::Error> {
+        config
+            .validate()
+            .map_err(|e| anyhow::anyhow!("invalid ResearchConfig: {e}"))?;
         let rx = bus.subscribe();
         let registry = Arc::new(RwLock::new(StrategyRegistry::new(&config)));
-        Self {
+        Ok(Self {
             config,
             registry,
             bus,
             rx: Some(rx),
-        }
+        })
     }
 
     // ── Public entry point ────────────────────────────────────────────────

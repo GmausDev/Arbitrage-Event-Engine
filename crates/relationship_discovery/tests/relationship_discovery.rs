@@ -103,7 +103,7 @@ async fn correlated_markets_produce_relationship() {
     let mut rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -146,7 +146,7 @@ async fn uncorrelated_markets_no_relationship() {
         min_relationship_score: 0.90,
         ..test_config()
     };
-    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -185,7 +185,7 @@ async fn multiple_pairs_discovered_independently() {
     let mut rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -239,7 +239,7 @@ async fn event_counters_are_accurate() {
     let bus    = EventBus::new();
     let cancel = CancellationToken::new();
 
-    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -281,7 +281,7 @@ async fn semantic_similarity_contributes_to_score() {
         edge_ttl_secs:          0,
         ..RelationshipDiscoveryConfig::default()
     };
-    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -319,7 +319,7 @@ async fn relationship_published_to_bus() {
     let mut rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(test_config(), bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -373,7 +373,7 @@ async fn directed_influence_detected() {
         edge_ttl_secs:      0,
         ..test_config()
     };
-    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -418,7 +418,7 @@ async fn stale_markets_are_evicted() {
         min_history_len:    2,  // low warm-up so markets are tracked quickly
         ..test_config()
     };
-    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone());
+    let engine = RelationshipDiscoveryEngine::new(cfg, bus.clone()).unwrap();
     let state  = engine.state();
     tokio::spawn(engine.run(cancel.child_token()));
 

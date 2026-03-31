@@ -74,11 +74,10 @@ impl ControlPanelServer {
             }
         };
 
-        let app = Router::new()
-            // System — health is public (no auth needed for load-balancer probes)
-            .route("/api/system/health",            get(health_handler))
+        // Authenticated routes — auth middleware protects everything here,
+        // including /api/metrics (which can leak strategy details).
+        let authed_routes = Router::new()
             .route("/api/metrics",                  get(metrics_handler))
-            // All other routes require authentication
             .route("/api/portfolio",                get(portfolio_handler))
             .route("/api/portfolio/equity_curve",   get(equity_curve_handler))
             .route("/api/signals/recent",           get(signals_handler))
@@ -91,9 +90,12 @@ impl ControlPanelServer {
             .route("/api/control/resume_trading",   post(resume_handler))
             .route("/api/control/update_parameter", post(update_parameter_handler))
             .route("/ws/stream",                    get(ws_handler))
-            // Auth middleware — applied to all routes; skips when
-            // CONTROL_PANEL_API_KEY is not set (dev mode).
-            .layer(middleware::from_fn(require_auth))
+            .layer(middleware::from_fn(require_auth));
+
+        let app = Router::new()
+            // Public — health is unauthenticated for load-balancer probes
+            .route("/api/system/health", get(health_handler))
+            .merge(authed_routes)
             // CORS
             .layer(cors)
             .with_state(self.state);

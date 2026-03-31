@@ -25,6 +25,7 @@ members = [
     "crates/cost_model",
     "crates/exchange_api",
     "crates/oms",
+    "crates/persistence",
 
     # Agent crates (library, spawned as async tasks from main)
     "agents/market_scanner",
@@ -69,7 +70,7 @@ toml         = "0.8"
 config       = "0.14"
 
 # HTTP client
-reqwest      = { version = "0.12", features = ["json", "stream"] }
+reqwest      = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 # Graph
 petgraph     = "0.6"
@@ -91,11 +92,14 @@ dotenvy      = "0.15"
 metrics      = "0.23"
 metrics-exporter-prometheus = "0.15"
 
+# Synchronization
+parking_lot  = "0.12"
+
 # Async utilities
 futures      = "0.3"
 async-trait  = "0.1"
 tokio-util   = { version = "0.7", features = ["rt"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 
 # Internal crates
 common                 = { path = "crates/common" }

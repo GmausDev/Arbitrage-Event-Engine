@@ -4,7 +4,7 @@
 // insert/query methods for all persisted record types.
 
 use std::path::Path;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -46,8 +46,8 @@ impl Database {
         Ok(db)
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().expect("persistence: database mutex poisoned")
+    fn conn(&self) -> parking_lot::MutexGuard<'_, Connection> {
+        self.conn.lock()
     }
 
     fn create_schema(&self) -> Result<()> {

@@ -744,7 +744,7 @@ async fn integration_engine_emits_strategy_discovered() {
         ..ResearchConfig::default()
     };
 
-    let engine = StrategyResearchEngine::new(config, bus.clone());
+    let engine = StrategyResearchEngine::new(config, bus.clone()).unwrap();
     let cancel = CancellationToken::new();
 
     let handle = tokio::spawn(engine.run(cancel.clone()));
@@ -798,7 +798,7 @@ async fn integration_strategy_discovered_event_has_valid_data() {
         ..ResearchConfig::default()
     };
 
-    let engine = StrategyResearchEngine::new(config, bus.clone());
+    let engine = StrategyResearchEngine::new(config, bus.clone()).unwrap();
     let cancel = CancellationToken::new();
     let handle = tokio::spawn(engine.run(cancel.clone()));
 

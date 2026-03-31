@@ -6,7 +6,7 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use serde::Deserialize;
 use std::time::Duration;
 
-use super::RawNewsItem;
+use super::{fetch_with_retry, RawNewsItem};
 
 #[async_trait]
 pub trait NewsConnector: Send + Sync {
@@ -52,6 +52,9 @@ struct NewsApiSource {
 
 pub struct NewsApiConnector {
     client: reqwest::Client,
+    base_url: String,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl NewsApiConnector {
@@ -60,7 +63,20 @@ impl NewsApiConnector {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("prediction-market-bot/1.0")
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://newsapi.org".into(),
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(timeout_ms: u64, base_url: String, max_retries: u32, retry_base_delay_ms: u64) -> anyhow::Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .user_agent("prediction-market-bot/1.0")
+            .build()?;
+        Ok(Self { client, base_url, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -68,8 +84,12 @@ impl Default for NewsApiConnector {
     fn default() -> Self {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "NewsApiConnector: failed to build HTTP client, using no-op fallback");
-            // Build a minimal client that will fail at request time rather than crash at startup.
-            Self { client: reqwest::Client::new() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: "https://newsapi.org".into(),
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -89,16 +109,21 @@ impl NewsConnector for NewsApiConnector {
             }
         };
 
-        // Use OR logic so articles about any of these topics are returned.
-        // The %20OR%20 syntax is NewsAPI's boolean OR operator.
-        let url = "https://newsapi.org/v2/top-headlines?q=prediction%20market%20OR%20economy%20OR%20politics%20OR%20federal%20reserve&language=en&pageSize=20";
+        let url = format!(
+            "{}/v2/top-headlines?q=prediction%20market%20OR%20economy%20OR%20politics%20OR%20federal%20reserve&language=en&pageSize=20",
+            self.base_url
+        );
 
-        // Pass API key via header instead of query parameter to avoid leaking
-        // credentials in logs, proxies, and HTTP referrer headers.
-        let resp = match self.client.get(url).header("X-Api-Key", &key).send().await {
+        let client = &self.client;
+        let resp = match fetch_with_retry(
+            || client.get(&url).header("X-Api-Key", &key),
+            self.max_retries,
+            self.retry_base_delay_ms,
+            "news_api",
+        ).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(connector = "news_api", err = %e, "HTTP request failed");
+                tracing::warn!(connector = "news_api", err = %e, "HTTP request failed after retries");
                 return Ok(vec![]);
             }
         };
@@ -190,6 +215,9 @@ struct AlphaVantageArticle {
 
 pub struct AlphaVantageNewsConnector {
     client: reqwest::Client,
+    base_url: String,
+    max_retries: u32,
+    retry_base_delay_ms: u64,
 }
 
 impl AlphaVantageNewsConnector {
@@ -198,7 +226,20 @@ impl AlphaVantageNewsConnector {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("prediction-market-bot/1.0")
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: "https://www.alphavantage.co".into(),
+            max_retries: 3,
+            retry_base_delay_ms: 500,
+        })
+    }
+
+    pub fn with_config(timeout_ms: u64, base_url: String, max_retries: u32, retry_base_delay_ms: u64) -> anyhow::Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .user_agent("prediction-market-bot/1.0")
+            .build()?;
+        Ok(Self { client, base_url, max_retries, retry_base_delay_ms })
     }
 }
 
@@ -206,7 +247,12 @@ impl Default for AlphaVantageNewsConnector {
     fn default() -> Self {
         Self::new(10_000).unwrap_or_else(|e| {
             tracing::error!(err = %e, "AlphaVantageNewsConnector: failed to build HTTP client, using no-op fallback");
-            Self { client: reqwest::Client::new() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: "https://www.alphavantage.co".into(),
+                max_retries: 3,
+                retry_base_delay_ms: 500,
+            }
         })
     }
 }
@@ -226,11 +272,8 @@ impl NewsConnector for AlphaVantageNewsConnector {
             }
         };
 
-        // AlphaVantage requires the key as a query parameter (no header auth
-        // supported), but we build the URL without interpolation to keep the
-        // key out of format-string logs.  reqwest will percent-encode if needed.
         let url = reqwest::Url::parse_with_params(
-            "https://www.alphavantage.co/query",
+            &format!("{}/query", self.base_url),
             &[
                 ("function", "NEWS_SENTIMENT"),
                 ("topics",   "economy_macro,financial_markets"),
@@ -240,10 +283,17 @@ impl NewsConnector for AlphaVantageNewsConnector {
             ],
         ).map_err(|e| anyhow::anyhow!("bad URL: {e}"))?;
 
-        let resp = match self.client.get(url).send().await {
+        let client = &self.client;
+        let url_str = url.to_string();
+        let resp = match fetch_with_retry(
+            || client.get(&url_str),
+            self.max_retries,
+            self.retry_base_delay_ms,
+            "alpha_vantage_news",
+        ).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(connector = "alpha_vantage_news", err = %e, "HTTP request failed");
+                tracing::warn!(connector = "alpha_vantage_news", err = %e, "HTTP request failed after retries");
                 return Ok(vec![]);
             }
         };

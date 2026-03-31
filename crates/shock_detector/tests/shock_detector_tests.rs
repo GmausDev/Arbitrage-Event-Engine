@@ -95,7 +95,7 @@ async fn no_shock_for_small_routine_move() {
     let bus = make_bus();
     let mut verify_rx = bus.subscribe();
 
-    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone()).unwrap();
     let state = engine.state();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
@@ -144,7 +144,7 @@ async fn shock_emitted_for_large_price_spike() {
     let bus = make_bus();
     let mut verify_rx = bus.subscribe();
 
-    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone()).unwrap();
     let state = engine.state();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
@@ -188,7 +188,7 @@ async fn shock_direction_down_for_price_crash() {
     let bus = make_bus();
     let mut verify_rx = bus.subscribe();
 
-    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone()).unwrap();
     let state = engine.state();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
@@ -234,7 +234,7 @@ async fn sentiment_shock_above_threshold() {
     let bus = make_bus();
     let mut verify_rx = bus.subscribe();
 
-    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone()).unwrap();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -278,7 +278,7 @@ async fn no_shock_for_weak_sentiment() {
     let bus = make_bus();
     let mut verify_rx = bus.subscribe();
 
-    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone()).unwrap();
     let state = engine.state();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
@@ -315,7 +315,7 @@ async fn multi_market_sentiment_propagation() {
     let bus = make_bus();
     let mut verify_rx = bus.subscribe();
 
-    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone()).unwrap();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
 
@@ -371,7 +371,7 @@ async fn price_and_sentiment_fusion_raises_magnitude() {
         price_weight: 0.5,
         ..ShockDetectorConfig::default()
     };
-    let engine = InformationShockDetector::new(config, bus.clone());
+    let engine = InformationShockDetector::new(config, bus.clone()).unwrap();
     let state = engine.state();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));
@@ -428,7 +428,7 @@ async fn price_and_sentiment_fusion_raises_magnitude() {
 async fn engine_state_bounded_on_repeated_updates() {
     let bus = make_bus();
 
-    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone());
+    let engine = InformationShockDetector::new(ShockDetectorConfig::default(), bus.clone()).unwrap();
     let state = engine.state();
 
     let cancel = CancellationToken::new();
@@ -479,7 +479,7 @@ async fn opposing_sentiment_does_not_suppress_price_shock() {
         price_weight: 0.5,
         ..ShockDetectorConfig::default()
     };
-    let engine = InformationShockDetector::new(config, bus.clone());
+    let engine = InformationShockDetector::new(config, bus.clone()).unwrap();
     let state = engine.state();
     let cancel = CancellationToken::new();
     tokio::spawn(engine.run(cancel.child_token()));

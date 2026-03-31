@@ -4,6 +4,14 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+fn default_prometheus_bind_addr() -> String {
+    "0.0.0.0:9000".to_string()
+}
+
+fn default_control_panel_bind_addr() -> String {
+    "0.0.0.0:3001".to_string()
+}
+
 /// Top-level application configuration.
 /// Mirrors the keys in config/default.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +32,14 @@ pub struct AppConfig {
     /// Paper-trading starting capital in USD. Used by portfolio_engine, execution_sim,
     /// portfolio_optimizer, risk_engine, and performance_analytics. No real money is ever sent.
     pub paper_bankroll: f64,
+
+    /// Bind address for the Prometheus metrics exporter (host:port).
+    #[serde(default = "default_prometheus_bind_addr")]
+    pub prometheus_bind_addr: String,
+
+    /// Bind address for the Mission Control dashboard (host:port).
+    #[serde(default = "default_control_panel_bind_addr")]
+    pub control_panel_bind_addr: String,
 }
 
 impl Default for AppConfig {
@@ -40,6 +56,8 @@ impl Default for AppConfig {
             bus_capacity: 1_024,
             tick_interval_ms: 1_000,
             paper_bankroll: 10_000.0,
+            prometheus_bind_addr: default_prometheus_bind_addr(),
+            control_panel_bind_addr: default_control_panel_bind_addr(),
         }
     }
 }

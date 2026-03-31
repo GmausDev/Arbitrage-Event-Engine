@@ -68,7 +68,7 @@ fn fresh_state() -> PortfolioState {
 }
 
 fn spawn_engine(bus: &EventBus, config: PortfolioConfig) -> CancellationToken {
-    let engine = PortfolioEngine::new(config, bus.clone());
+    let engine = PortfolioEngine::new(config, bus.clone()).unwrap();
     let cancel = CancellationToken::new();
     let c = cancel.clone();
     tokio::spawn(async move { engine.run(c).await });
@@ -405,7 +405,7 @@ async fn two_executions_two_positions() {
 #[tokio::test]
 async fn unfilled_execution_does_not_create_position() {
     let bus    = EventBus::new();
-    let engine = PortfolioEngine::new(PortfolioConfig::default(), bus.clone());
+    let engine = PortfolioEngine::new(PortfolioConfig::default(), bus.clone()).unwrap();
     let state  = engine.get_portfolio_state();
     let cancel = {
         let c = CancellationToken::new();
@@ -433,7 +433,7 @@ async fn unfilled_execution_does_not_create_position() {
 #[tokio::test]
 async fn partial_fill_deploys_correct_capital() {
     let bus    = EventBus::new();
-    let engine = PortfolioEngine::new(PortfolioConfig::default(), bus.clone());
+    let engine = PortfolioEngine::new(PortfolioConfig::default(), bus.clone()).unwrap();
     let state  = engine.get_portfolio_state();
     let cancel = {
         let c = CancellationToken::new();

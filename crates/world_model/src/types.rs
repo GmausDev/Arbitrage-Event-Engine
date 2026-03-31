@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::error::WorldModelError;
+
 /// Canonical identifier for a prediction market.
 pub type MarketId = String;
 
@@ -123,14 +125,29 @@ impl WorldState {
     /// `(parent_market, child_market)` pair to prevent duplicate propagation.
     ///
     /// Returns the previous dependency if one was replaced.
-    pub fn add_dependency(&mut self, dep: WorldDependency) -> Option<WorldDependency> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldModelError::InvalidWeight` if `dep.weight` is outside [-1.0, 1.0].
+    /// Returns `WorldModelError::InvalidConfidence` if `dep.confidence` is outside [0.0, 1.0].
+    pub fn add_dependency(
+        &mut self,
+        dep: WorldDependency,
+    ) -> Result<Option<WorldDependency>, WorldModelError> {
+        if !(-1.0..=1.0).contains(&dep.weight) {
+            return Err(WorldModelError::InvalidWeight(dep.weight));
+        }
+        if !(0.0..=1.0).contains(&dep.confidence) {
+            return Err(WorldModelError::InvalidConfidence(dep.confidence));
+        }
+
         if let Some(pos) = self.dependencies.iter().position(|d| {
             d.parent_market == dep.parent_market && d.child_market == dep.child_market
         }) {
-            Some(std::mem::replace(&mut self.dependencies[pos], dep))
+            Ok(Some(std::mem::replace(&mut self.dependencies[pos], dep)))
         } else {
             self.dependencies.push(dep);
-            None
+            Ok(None)
         }
     }
 }
