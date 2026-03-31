@@ -42,3 +42,4 @@ Iterationprompt.md
 # Exclude all .md files except README.md at the root
 *.md
 !README.md
+data/
