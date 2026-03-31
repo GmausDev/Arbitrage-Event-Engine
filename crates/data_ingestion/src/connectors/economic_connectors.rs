@@ -53,7 +53,10 @@ impl FREDConnector {
 
 impl Default for FREDConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build FREDConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "FREDConnector: failed to build HTTP client, using no-op fallback");
+            Self { client: reqwest::Client::new() }
+        })
     }
 }
 
@@ -78,11 +81,26 @@ impl EconomicConnector for FREDConnector {
             let key = key.clone();
             let series_id = series_id.to_string();
             async move {
-                let url = format!(
-                    "https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={key}&file_type=json&sort_order=desc&limit=2"
-                );
+                // Build URL with query params via reqwest::Url to keep the
+                // API key out of format-string logs and proxy access logs.
+                let url = match reqwest::Url::parse_with_params(
+                    "https://api.stlouisfed.org/fred/series/observations",
+                    &[
+                        ("series_id",  series_id.as_str()),
+                        ("api_key",    key.as_str()),
+                        ("file_type",  "json"),
+                        ("sort_order", "desc"),
+                        ("limit",      "2"),
+                    ],
+                ) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::warn!(connector = "fred", series = %series_id, err = %e, "bad URL");
+                        return None;
+                    }
+                };
 
-                let resp = match client.get(&url).send().await {
+                let resp = match client.get(url).send().await {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!(connector = "fred", series = %series_id, err = %e, "fetch failed");
@@ -108,8 +126,8 @@ impl EconomicConnector for FREDConnector {
                     return None;
                 }
 
-                let current_value = valid[0].value.parse::<f64>().ok()?;
-                let previous = valid.get(1).and_then(|o| o.value.parse::<f64>().ok());
+                let current_value = valid[0].value.parse::<f64>().ok().filter(|v| v.is_finite())?;
+                let previous = valid.get(1).and_then(|o| o.value.parse::<f64>().ok()).filter(|v| v.is_finite());
 
                 Some(RawEconomicData {
                     indicator: series_id,
@@ -166,7 +184,10 @@ impl TradingEconomicsConnector {
 
 impl Default for TradingEconomicsConnector {
     fn default() -> Self {
-        Self::new(10_000).expect("failed to build TradingEconomicsConnector default client")
+        Self::new(10_000).unwrap_or_else(|e| {
+            tracing::error!(err = %e, "TradingEconomicsConnector: failed to build HTTP client, using no-op fallback");
+            Self { client: reqwest::Client::new() }
+        })
     }
 }
 
@@ -190,11 +211,14 @@ impl EconomicConnector for TradingEconomicsConnector {
             .format("%Y-%m-%d")
             .to_string();
 
-        let url = format!(
-            "https://api.tradingeconomics.com/calendar?c={key}&d1={today}&d2={next_week}"
-        );
+        // Build URL with query params via reqwest::Url to keep the API key
+        // out of format-string logs and proxy access logs.
+        let url = reqwest::Url::parse_with_params(
+            "https://api.tradingeconomics.com/calendar",
+            &[("c", key.as_str()), ("d1", today.as_str()), ("d2", next_week.as_str())],
+        ).map_err(|e| anyhow::anyhow!("bad URL: {e}"))?;
 
-        let resp = match self.client.get(&url).send().await {
+        let resp = match self.client.get(url).send().await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(connector = "trading_economics", err = %e, "HTTP request failed");

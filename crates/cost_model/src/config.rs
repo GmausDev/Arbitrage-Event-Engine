@@ -2,6 +2,28 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Per-exchange fee overrides.
+///
+/// When a trade targets a known exchange, the cost model will use the
+/// exchange-specific fee rate instead of `fee_rate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExchangeFees {
+    /// Polymarket: no explicit fee, but taker spread ~0.5%.
+    pub polymarket: f64,
+    /// Kalshi: ~2% fee on profitable settlements (modeled as round-trip cost).
+    pub kalshi: f64,
+}
+
+impl Default for ExchangeFees {
+    fn default() -> Self {
+        Self {
+            polymarket: 0.005,
+            kalshi:     0.02,
+        }
+    }
+}
+
 /// Configuration for the trading cost model.
 ///
 /// All fractional fields (fee_rate, spread coefficients) are on the same
@@ -10,11 +32,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CostModelConfig {
-    /// Exchange/platform fee as a fraction of position value.
+    /// Default exchange/platform fee as a fraction of position value.
     ///
     /// Applied as a round-trip cost at entry (exit fee is assumed symmetric).
+    /// Overridden by `exchange_fees` when the target exchange is known.
     /// Default: 0.02 (2 %).
     pub fee_rate: f64,
+
+    /// Per-exchange fee overrides.
+    pub exchange_fees: ExchangeFees,
 
     /// Spread-cost multiplier: `spread_cost = spread_volatility_k × volatility`.
     ///
@@ -58,10 +84,22 @@ pub struct CostModelConfig {
     pub default_market_liquidity: f64,
 }
 
+impl CostModelConfig {
+    /// Return the fee rate for a specific exchange, falling back to the default.
+    pub fn fee_rate_for(&self, exchange: &str) -> f64 {
+        match exchange.to_lowercase().as_str() {
+            "polymarket" => self.exchange_fees.polymarket,
+            "kalshi"     => self.exchange_fees.kalshi,
+            _            => self.fee_rate,
+        }
+    }
+}
+
 impl Default for CostModelConfig {
     fn default() -> Self {
         Self {
             fee_rate:                 0.02,
+            exchange_fees:            ExchangeFees::default(),
             spread_volatility_k:      0.5,
             liquidity_impact_factor:  0.001,
             decay_rate:               0.001,

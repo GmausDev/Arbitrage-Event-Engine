@@ -38,6 +38,10 @@ signal_priority_engine   = { path = "../crates/signal_priority_engine" }
 calibration              = { path = "../crates/calibration" }
 control-panel            = { path = "../control-panel" }
 
+# Execution layer (live trading)
+exchange_api             = { path = "../crates/exchange_api" }
+oms                      = { path = "../crates/oms" }
+
 # Runtime & utilities
 tokio      = { workspace = true }
 tokio-util = { workspace = true }

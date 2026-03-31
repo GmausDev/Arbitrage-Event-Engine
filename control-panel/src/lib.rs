@@ -20,6 +20,7 @@
 // tokio::spawn(server.run(cancel.clone()));
 // ```
 
+pub mod auth;
 pub mod config_store;
 pub mod event_collector;
 pub mod routes;

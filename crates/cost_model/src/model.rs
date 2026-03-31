@@ -52,6 +52,27 @@ pub fn compute_cost_estimate(
     CostEstimate { fees, spread, slippage, decay_cost, total_cost }
 }
 
+/// Compute costs using an exchange-specific fee rate.
+///
+/// Identical to [`compute_cost_estimate`] but uses the fee schedule for the
+/// given exchange name (via `config.fee_rate_for(exchange)`).
+pub fn compute_cost_estimate_for_exchange(
+    gross_edge: f64,
+    position_fraction: f64,
+    volatility: f64,
+    latency_ms: f64,
+    exchange: &str,
+    config: &CostModelConfig,
+) -> CostEstimate {
+    let fees       = config.fee_rate_for(exchange);
+    let spread     = config.spread_volatility_k * volatility;
+    let slippage   = position_fraction * config.liquidity_impact_factor;
+    let decay_cost = gross_edge * (1.0 - (-config.decay_rate * latency_ms).exp());
+    let total_cost = fees + spread + slippage + decay_cost;
+
+    CostEstimate { fees, spread, slippage, decay_cost, total_cost }
+}
+
 /// `net_edge = gross_edge − total_cost`, clamped to [−1, 1].
 #[inline]
 pub fn compute_net_edge(gross_edge: f64, cost: &CostEstimate) -> f64 {
