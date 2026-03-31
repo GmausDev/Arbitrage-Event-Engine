@@ -91,6 +91,47 @@ impl AccountReconciler {
     }
 
     /// Reconcile a single exchange: compare balance and positions.
+    //
+    // TODO(full-reconciliation): Upgrade from count-only to full position reconciliation.
+    //
+    //   Current state:
+    //     - Balance reconciliation compares a single f64 per exchange.
+    //     - Position reconciliation only compares *counts* (exchange vs internal).
+    //     - No per-position field-level comparison is performed.
+    //
+    //   Prerequisite:
+    //     - PortfolioEngine must expose a query API (e.g.
+    //       `fn get_positions(exchange: &str) -> Vec<InternalPosition>`) so the
+    //       reconciler can read the authoritative internal position state.
+    //     - Pass an `Arc<PortfolioEngine>` into AccountReconciler (or an
+    //       abstract trait to keep the dependency inverted).
+    //
+    //   Algorithm:
+    //     1. Fetch exchange positions via ExchangeConnector::get_positions().
+    //     2. Fetch internal positions via PortfolioEngine query API, filtered
+    //        by exchange name.
+    //     3. Build lookup maps keyed by market_id for both sets.
+    //     4. For each market_id present in *either* map, compare:
+    //        a. Missing position  — exists internally but not on exchange.
+    //        b. Extra position    — exists on exchange but not internally.
+    //        c. Size mismatch     — both exist but size differs beyond threshold.
+    //        d. Direction mismatch — both exist but direction (Yes/No) disagrees.
+    //     5. Collect all discrepancies into mismatch_details with structured
+    //        JSON (market_id, field, internal_value, exchange_value).
+    //
+    //   Data flow:
+    //     Exchange API  ──get_positions()──►  Reconciler
+    //     PortfolioEngine ──query()────────►  Reconciler
+    //         Reconciler  ──diff──►  mismatch_details
+    //         mismatch_details ──►  AuditEntry (DB) + metrics + alert/correct
+    //
+    //   Alert / correction:
+    //     - Log each mismatch as a separate AuditEntry with category
+    //       "reconciliation:position".
+    //     - Emit per-type metric counters (missing, extra, size, direction).
+    //     - Future: auto-correct by syncing PortfolioEngine state or placing
+    //       corrective orders (behind a feature flag / dry-run mode).
+    //
     async fn reconcile_exchange(
         &self,
         exchange: &dyn ExchangeConnector,
@@ -119,6 +160,7 @@ impl AccountReconciler {
         // would compare each position against the internal portfolio — that
         // requires access to the PortfolioEngine's state, which we can add
         // when the portfolio crate exposes a query API.
+        // See TODO(full-reconciliation) above for the planned design.
         let mut mismatch_details = Vec::new();
 
         if balance_diff > 1.0 {

@@ -270,6 +270,19 @@ impl ExchangeConnector for PolymarketConnector {
         // a direct balance endpoint — in production this would call a wallet
         // RPC or the funding API.  For now, return a placeholder that the OMS
         // will override with cached state.
+        //
+        // TODO(on-chain): Implement live USDC balance query.
+        //   Crate:    `alloy` (preferred) or `ethers` for Polygon JSON-RPC calls.
+        //   Env var:  POLYGON_RPC_URL — Polygon PoS RPC endpoint (e.g. Alchemy/Infura).
+        //   Env var:  POLYMARKET_PRIVATE_KEY — wallet private key (also needed for
+        //             EIP-712 CLOB order signing).
+        //   Contract: USDC on Polygon — 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174.
+        //   Method:   ERC-20 `balanceOf(wallet_address)` → raw units (6 decimals).
+        //   Steps:
+        //     1. Build a Provider from POLYGON_RPC_URL.
+        //     2. Derive wallet address from POLYMARKET_PRIVATE_KEY.
+        //     3. Call USDC.balanceOf(wallet) and convert from 6-decimal raw to f64.
+        //     4. Return the converted balance.
         warn!("polymarket: get_balance requires on-chain USDC query — returning 0.0 placeholder");
         Ok(0.0)
     }
@@ -278,6 +291,20 @@ impl ExchangeConnector for PolymarketConnector {
         // Positions on Polymarket are ERC-1155 token balances.
         // The CLOB API has no direct positions endpoint — this requires
         // querying the conditional token framework contract.
+        //
+        // TODO(on-chain): Implement Conditional Token Framework position query.
+        //   Crate:    `alloy` (preferred) or `ethers` for Polygon JSON-RPC calls.
+        //   Env vars: POLYGON_RPC_URL, POLYMARKET_PRIVATE_KEY (same as get_balance).
+        //   Contract: CTF (ERC-1155) on Polygon — 0x4D97DCd97eC945f40cF65F87097ACe5EA0476045.
+        //   Method:   ERC-1155 `balanceOf(wallet, tokenId)` for each known token ID.
+        //   Steps:
+        //     1. Maintain or fetch a list of active condition/token IDs from open
+        //        orders or a local cache of traded markets.
+        //     2. Batch-call `balanceOf(wallet, tokenId)` (or use `balanceOfBatch`)
+        //        for all tracked token IDs.
+        //     3. Convert non-zero balances into ExchangePosition structs
+        //        (market_id = token ID, size from raw balance).
+        //     4. Return the collected positions vector.
         warn!("polymarket: get_positions requires on-chain token query — returning empty");
         Ok(vec![])
     }
